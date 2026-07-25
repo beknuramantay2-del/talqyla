@@ -1,0 +1,73 @@
+'use client';
+
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
+import { api, setAccessToken } from './api';
+
+interface AuthUser {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+}
+
+interface AuthContextType {
+  user: AuthUser | null;
+  loading: boolean;
+  login: (email: string, password: string) => Promise<AuthUser>;
+  register: (email: string, password: string, name: string) => Promise<AuthUser>;
+  logout: () => void;
+}
+
+const AuthContext = createContext<AuthContextType | null>(null);
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const stored = localStorage.getItem('auth_user');
+    const token = localStorage.getItem('access_token');
+    if (stored && token) {
+      setUser(JSON.parse(stored));
+      setAccessToken(token);
+    }
+    setLoading(false);
+  }, []);
+
+  const login = useCallback(async (email: string, password: string) => {
+    const res = await api.login({ email, password });
+    setAccessToken(res.accessToken);
+    localStorage.setItem('access_token', res.accessToken);
+    localStorage.setItem('auth_user', JSON.stringify(res.user));
+    setUser(res.user);
+    return res.user;
+  }, []);
+
+  const register = useCallback(async (email: string, password: string, name: string) => {
+    const res = await api.register({ email, password, name });
+    setAccessToken(res.accessToken);
+    localStorage.setItem('access_token', res.accessToken);
+    localStorage.setItem('auth_user', JSON.stringify(res.user));
+    setUser(res.user);
+    return res.user;
+  }, []);
+
+  const logout = useCallback(() => {
+    setAccessToken(null);
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('auth_user');
+    setUser(null);
+  }, []);
+
+  return (
+    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
+  return ctx;
+}

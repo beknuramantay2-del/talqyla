@@ -1,0 +1,281 @@
+// ДебатоТренер — Prisma schema (MVP).
+//
+// Conventions (mirror psychoconnect):
+//   - All ids are cuid() (URL-safe, no enumeration like sequential ints).
+//   - Timestamps are UTC; updatedAt handled by Prisma @updatedAt.
+//   - camelCase TS fields map to snake_case DB columns via @map.
+//   - Every model closes with @@map("plural_snake_table").
+//   - Refresh tokens use the rotating family pattern: a stale-token reuse
+//     revokes the whole family.
+//   - Cost tracking: every turn records tokens + USD cost so we can show
+//     real per-round economics on the admin dashboard.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+  output        = "../node_modules/@talqyla/prisma-client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────── ENUMS ───────────────────────────────
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum ExperienceLevel {
+  // Derived from the onboarding quiz (grade + prior experience + logic answer).
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+}
+
+enum SkillKey {
+  STRUCTURE
+  CONTENT
+  REFUTATION
+  LOGIC
+  DELIVERY
+}
+
+enum TopicCategory {
+  SCHOOL
+  SOCIETY
+  TECHNOLOGY
+  ETHICS
+  ENVIRONMENT
+  SPORTS
+  CULTURE
+}
+
+enum TopicDifficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+enum Stance {
+  PRO
+  CON
+}
+
+enum RoundStatus {
+  SETUP
+  ARGUMENT_BUILT
+  IN_PROGRESS
+  AWAITING_JUDGE
+  COMPLETED
+  ABORTED
+}
+
+enum TurnRole {
+  STUDENT
+  OPPONENT
+}
+
+enum TurnKind {
+  OPENING
+  REBUTTAL
+  QUESTION
+  RESPONSE
+  CLOSING
+}
+
+enum SttProvider {
+  STUB
+  GROQ
+  OPENAI
+}
+
+enum TtsProvider {
+  STUB
+  OPENAI
+  ELEVENLABS
+}
+
+// ─────────────────────────────── MODELS ───────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         UserRole @default(USER)
+  // Refresh-token rotation: the jti of the currently valid refresh token.
+  refreshJti           String?   @map("refresh_jti")
+  lastLoginAt          DateTime? @map("last_login_at")
+  passwordResetToken   String?   @map("password_reset_token")
+  passwordResetExpires DateTime? @map("password_reset_expires")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  studentProfile StudentProfile?
+  rounds         DebateRound[]
+  refreshTokens  RefreshToken[]
+  onboarding     OnboardingQuiz?
+
+  @@map("users")
+}
+
+model StudentProfile {
+  id              String           @id @default(cuid())
+  userId          String           @unique @map("user_id")
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  grade           Int              // 7–11
+  experienceLevel ExperienceLevel  @default(BEGINNER) @map("experience_level")
+  // The skill the dashboard recommends focusing on next (weakest recent skill).
+  focusSkill      SkillKey?        @map("focus_skill")
+  // Free-text goal from onboarding: "Уверенность в речи" / "Аргументы" / ...
+  goal            String?
+  roundsPlayed    Int              @default(0) @map("rounds_played")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+
+  @@map("student_profiles")
+}
+
+// 15 hardcoded debate topics. Seeded idempotently by slug.
+model Topic {
+  id          String         @id @default(cuid())
+  slug        String         @unique
+  title       String
+  description String
+  category    TopicCategory
+  difficulty  TopicDifficulty @default(EASY)
+  // Optional one-line hint nudging the student toward a Claim they might use.
+  proHint     String?        @map("pro_hint")
+  conHint     String?        @map("con_hint")
+  createdAt   DateTime       @default(now()) @map("created_at")
+
+  rounds DebateRound[]
+
+  @@map("topics")
+}
+
+model DebateRound {
+  id            String      @id @default(cuid())
+  userId        String      @map("user_id")
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topicId       String      @map("topic_id")
+  topic         Topic       @relation(fields: [topicId], references: [id])
+  stance        Stance
+  status        RoundStatus @default(SETUP)
+  // The argument the student built (Claim / Warrant / Impact) — JSON.
+  argument      Json?
+  // Full ordered transcript of the round. Source of truth for the Judge.
+  transcript    Json        @default("[]") @map("transcript")
+  // How many opponent↔student exchanges were completed.
+  exchangesDone Int         @default(0) @map("exchanges_done")
+  // Accumulated USD cost across all turns (for analytics / per-user burn).
+  costEstimateUsd Decimal?  @db.Decimal(8, 4) @map("cost_estimate_usd")
+  // Optional skill focus set when starting the round (drives Debater prompt).
+  focusSkill    SkillKey?   @map("focus_skill")
+  startedAt     DateTime    @default(now()) @map("started_at")
+  completedAt   DateTime?   @map("completed_at")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @updatedAt @map("updated_at")
+
+  turns       DebateTurn[]
+  skillScores SkillScore[]
+  feedback    RoundFeedback?
+
+  @@index([userId, status])
+  @@index([userId, completedAt])
+  @@map("debate_rounds")
+}
+
+// One row per spoken/written turn in a round. Ordered by `idx`.
+// Student turns come from STT; opponent turns come from the Debater + TTS.
+model DebateTurn {
+  id           String    @id @default(cuid())
+  roundId      String    @map("round_id")
+  round        DebateRound @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  idx          Int // 0-based position in the round
+  role         TurnRole
+  kind         TurnKind
+  contentText  String    @map("content_text")
+  // Optional question the opponent asked (extracted from JSON-mode Debater response).
+  question     String?
+  // Local URL to the synthesised opponent audio (or student recording).
+  audioUrl     String?   @map("audio_url")
+  // For opponent turns: refs into the student's argument transcript was cited.
+  citationRefs Json?     @default("[]") @map("citation_refs")
+  tokensIn     Int       @default(0) @map("tokens_in")
+  tokensOut    Int       @default(0) @map("tokens_out")
+  costUsd      Decimal   @default(0) @db.Decimal(8, 6) @map("cost_usd")
+  sttProvider  SttProvider? @map("stt_provider")
+  ttsProvider  TtsProvider? @map("tts_provider")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@index([roundId, idx])
+  @@map("debate_turns")
+}
+
+// Judge output: 5 rows per completed round, one per skill.
+model SkillScore {
+  id        String   @id @default(cuid())
+  roundId   String   @map("round_id")
+  round     DebateRound @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  skill     SkillKey
+  score     Int // 0–10
+  comment   String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([roundId, skill])
+  @@index([skill])
+  @@map("skill_scores")
+}
+
+// Optional: persist the Judge's prose feedback separately from the structured
+// SkillScore rows (strengths/weaknesses + actionable advice as JSON).
+model RoundFeedback {
+  id           String   @id @default(cuid())
+  roundId      String   @unique @map("round_id")
+  round        DebateRound @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  totalScore   Int // 0–50
+  strengths    Json // string[]
+  weaknesses   Json // string[]
+  advice       Json // string[]
+  summaryText  String  @map("summary_text") // human-readable overall verdict
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("round_feedback")
+}
+
+model OnboardingQuiz {
+  id             String           @id @default(cuid())
+  userId         String           @unique @map("user_id")
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  grade          Int // 7–11
+  priorExperience String          @map("prior_experience") // never | few | regular
+  goal           String
+  logicAnswer    String           @map("logic_answer") // argument | opinion
+  derivedLevel   ExperienceLevel  @map("derived_level")
+  createdAt      DateTime         @default(now()) @map("created_at")
+
+  @@map("onboarding_quizzes")
+}
+
+// Rotating refresh tokens: each issued refresh token is a row, allowing
+// detection of reuse (the whole family is revoked if a stale token is used).
+model RefreshToken {
+  id         String   @id @default(cuid())
+  userId     String   @map("user_id")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jti        String   @unique // JWT id
+  family     String   // rotation chain id — revoke family on reuse
+  hashed     String   // store only a hash of the token
+  expiresAt  DateTime @map("expires_at")
+  revokedAt  DateTime? @map("revoked_at")
+  replacedBy String?  @map("replaced_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([family])
+  @@map("refresh_tokens")
+}

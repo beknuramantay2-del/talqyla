@@ -1,0 +1,37 @@
+# Gitleaks config for Talqyla
+# Prevents committing secrets like API keys, tokens, connection strings
+
+title = "Talqyla Gitleaks Config"
+
+[[rules]]
+id = "talqyla-api-keys"
+description = "Talqyla API keys and tokens"
+regex = '''(?i)(OPENROUTER_API_KEY|GROQ_API_KEY|OPENAI_API_KEY|ELEVENLABS_API_KEY|JWT_ACCESS_SECRET|JWT_REFRESH_SECRET)\s*[=:]\s*['"]?[A-Za-z0-9_\-]{16,}'''
+tags = ["talqyla", "api-key"]
+
+[[rules]]
+id = "generic-api-key"
+description = "Generic API Key"
+regex = '''(?i)(api[_-]?key|apikey|secret[_-]?key|secretkey|access[_-]?token|accesstoken)\s*[=:]\s*['"]?[A-Za-z0-9_\-\.]{16,}'''
+tags = ["key", "api"]
+
+[[rules]]
+id = "private-key"
+description = "Private Key"
+regex = '''-----BEGIN\s?(RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----'''
+tags = ["key", "private"]
+
+[[rules]]
+id = "connection-string"
+description = "Database connection string"
+regex = '''(postgresql|postgres|mysql|mongodb|redis)://[^\s]{8,}'''
+tags = ["database", "connection"]
+
+[allowlist]
+description = "Allowlisted files and paths"
+paths = [
+  "(^|/)test-setup\\.ts$",
+  "(^|/)prisma/",
+  "\\.md$",
+  "\\.gitleaks\\.toml$",
+]

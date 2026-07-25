@@ -1,0 +1,32 @@
+{
+  "name": "talqyla",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ДебатоТренер — AI-тренер по дебатам для школьников 7–11 классов. Структурированные раунды с голосовым спарринг-оппонентом и агентом-судьёй.",
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter \"./apps/**\" run dev",
+    "dev:web": "pnpm --filter @talqyla/web dev",
+    "dev:api": "pnpm --filter @talqyla/api dev",
+    "build": "pnpm -r run build",
+    "lint": "pnpm -r run lint",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test",
+    "db:generate": "pnpm --filter @talqyla/db prisma:generate",
+    "db:migrate": "pnpm --filter @talqyla/db prisma:migrate",
+    "db:deploy": "pnpm --filter @talqyla/db prisma:deploy",
+    "db:seed": "pnpm --filter @talqyla/db seed",
+    "db:studio": "pnpm --filter @talqyla/db prisma:studio",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "infra:logs": "docker compose logs -f",
+    "postinstall": "pnpm --filter @talqyla/db prisma:generate"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.0"
+  }
+}

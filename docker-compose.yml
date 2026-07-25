@@ -1,0 +1,40 @@
+# Local development stack for ДебатоТренер.
+# Postgres 16 holds all app state (users, rounds, turns, scores).
+# Redis backs Fastify rate-limiting. Both are healthchecked.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: talqyla-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-debato}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-debato}
+      POSTGRES_DB: ${POSTGRES_DB:-talqyla}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-debato} -d ${POSTGRES_DB:-talqyla}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: talqyla-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pg_data:
+  redis_data:

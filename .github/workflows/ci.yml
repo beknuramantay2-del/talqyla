@@ -42,12 +42,15 @@ jobs:
       - name: Type check
         run: pnpm typecheck
 
+      # Includes the offline judge-eval guards (golden set integrity, scoring
+      # maths, rubric parsing). The paid accuracy run is in judge-eval.yml.
       - name: Test
         run: pnpm test
 
-      - name: Audit dependencies (high+ only)
-        run: pnpm audit --audit-level=high || true
-        continue-on-error: true
+      # Was `|| true` + continue-on-error, i.e. purely decorative. A high or
+      # critical advisory should stop the build, not decorate the log.
+      - name: Audit dependencies (high+)
+        run: pnpm audit --audit-level=high
 
   secrets:
     runs-on: ubuntu-latest

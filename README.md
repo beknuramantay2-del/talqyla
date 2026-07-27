@@ -1,157 +1,32 @@
 # ДебатоТренер
 
-AI-тренер по дебатам для школьников 7–11 классов. Структурированные раунды с **голосовым спарринг-оппонентом** и **агентом-судьёй**, который выставляет числовую оценку по 5 навыкам и даёт конкретный фидбек с цитатами.
+**Talqyla is a structured debate coach for school students, not another AI chat.** A student builds a Claim → Warrant → Impact case, faces a focused sparring opponent, then receives a coach-grade ballot and a concrete next drill.
 
-**Ключевое отличие от чат-врапперов:** не свободный чат, а методология в действии — ученик строит аргумент по схеме `Claim → Warrant → Impact`, потом ведёт живой голосовой диалог с оппонентом, а отдельный агент-судья разбирает весь раунд по рубрике. Слабейший навык из прошлого раунда становится фокусом следующего и напрямую управляет поведением оппонента.
+The first wedge is Russian/Kazakh-ready school debate practice for grades 7–11: short, repeatable rounds that work without a partner and build a visible skill graph over time.
 
-## Стек
+## Product loop
 
-- **Монорепо:** pnpm workspace (Node ≥ 20)
-- **БД:** PostgreSQL 16 + Prisma 5 (cuid id, snake_case `@map`)
-- **Кеш/rate-limit:** Redis 7
-- **API:** Fastify 4 (Zod type-provider, JWT + refresh-token family, Swagger)
-- **Веб:** Next.js 14 (App Router) + Tailwind + React Query + Zustand
-- **AI:** OpenRouter (Claude Haiku 4.5 — оппонент, судья и суммаризатор) + STT (Groq Whisper) + TTS (OpenAI)
+`Motion → Case → Cross-question → Counterpunch → Ballot → Next drill`
 
-Все AI-сервисы имеют **режим `stub`** — весь UI и флоу раунда можно разрабатывать и тестировать без единого платного ключа.
+The product is deliberately turn-based in the MVP. We do not pretend a REST round is realtime conversation. Voice is an input mode today; realtime interruption is a later format upgrade, not marketing fiction.
 
-## Структура
+## Why it is not a wrapper
 
-```
-talqyla/
-├─ apps/
-│  ├─ api/    Fastify
-│  │  └─ src/
-│  │     ├─ agents/    Оппонент, Судья, Суммаризатор + провайдер LLM/STT/TTS
-│  │     ├─ services/  Оркестрация раунда (без промптов)
-│  │     ├─ jobs/      Очистка данных по политике хранения
-│  │     └─ evals/     Golden set судьи + офлайн-проверки + live-раннер
-│  └─ web/    Next.js: 4 экрана + входной тест
-├─ packages/
-│  ├─ config/ Zod env-схема + доменные примитивы
-│  └─ db/     Prisma schema дебатов + seed + client singleton
-└─ docs/
-   ├─ plans/                  дизайн-документы
-   └─ privacy-and-retention.md что храним о детях и сколько
-```
+- Fixed debate methodology, not open chat.
+- Separate opponent and judge roles.
+- Weakest skill becomes the next round's pressure point.
+- Feedback must cite the student's words and end with an actionable drill.
+- Progress is measured across rounds, not by decorative usage counters.
 
-Промпты живут в `apps/api/src/agents/*.ts` рядом с кодом агента: их можно юнит-тестировать и переиспользовать в eval-раннере без базы.
+## MVP scope
 
-## Быстрый старт
+- Structured Claim / Warrant / Impact builder.
+- Three-exchange Debate Arena with visible phases.
+- Voice-to-text input, with typed fallback.
+- Ballot scoring across Structure, Content, Refutation, Logic, and Delivery.
+- Parent consent, transcript retention, export and deletion controls.
+- Daily spend caps, schema-validated model output, judge eval harness and security release gate.
 
-```bash
-# 1. Зависимости и окружение
-pnpm install
-cp .env.example .env          # всё работает со значениями по умолчанию (stub-режим)
+## Positioning details
 
-# 2. Поднять Postgres + Redis
-pnpm infra:up
-
-# 3. Миграция и сиды (15 тем + демо-пользователи)
-pnpm db:migrate
-pnpm db:seed
-
-# 4. Запустить API + web параллельно
-pnpm dev
-#   → API:  http://localhost:4000  (Swagger на /docs, только вне production)
-#   → Web:  http://localhost:3000
-```
-
-Демо-доступы (печатаются в консоли после `pnpm db:seed`):
-- ученик: `ivan@example.com` / `debato1234`
-- админ: `admin@example.com` / `debato1234`
-
-## Подключение AI
-
-| Переменная | Где взять | Сколько положить |
-|---|---|---|
-| `OPENROUTER_API_KEY` | openrouter.ai → Keys | $20 |
-| `GROQ_API_KEY` | console.groq.com → API Keys | $0 (бесплатный тир) |
-| `OPENAI_API_KEY` | platform.openai.com → Billing | $5 |
-
-Затем переключи `STT_PROVIDER=groq` и `TTS_PROVIDER=openai`.
-
-## Экономика раунда
-
-Раунд из 3 обменов, ~15 минут. Разложение по статьям (порядок важнее точности до цента):
-
-| Статья | Доля |
-|---|---|
-| TTS — синтез голоса оппонента | ~50% |
-| Судья — один вызов на раунд | ~25% |
-| Оппонент — три вызова | ~12% |
-| STT — распознавание речи ученика | ~10% |
-
-**Вывод, который определяет приоритеты: расходы — это голос и судья, а не история диалога.** Отсюда решения в коде:
-
-- реплика оппонента ограничена 80–100 словами (`maxTokens: 350`) — это самый прямой рычаг на TTS;
-- у `/voice/tts` есть жёсткий потолок `TTS_MAX_CHARS`, иначе эндпоинт превращается в бесплатный TTS-API за наш счёт;
-- судья работает на Haiku 4.5, а не на Sonnet 3.5 — втрое дешевле при лучшем качестве;
-- **суммаризатор выключен по умолчанию** (`SUMMARIZER_ENABLED=false`): при 3 обменах лишний вызов LLM стоит дороже той истории, которую он сжимает;
-- стоимость берётся из фактического `usage.cost` OpenRouter, а таблица цен в коде — только запасной вариант (поле `costSource` показывает, какая цифра использована).
-
-### Кэпы расходов
-
-`costEstimateUsd` — не аналитика, а живой предохранитель. Перед созданием раунда проверяются два потолка на пользователя за UTC-сутки:
-
-| Переменная | По умолчанию |
-|---|---|
-| `DAILY_ROUND_LIMIT` | 10 раундов |
-| `DAILY_COST_LIMIT_USD` | $1.00 |
-
-Rate-limit ключуется по сессии, а не по IP: школа за одним NAT больше не делит общий бакет.
-
-## Качество судьи (evals)
-
-Продукт продаёт объективную оценку, поэтому судью надо измерять, а не надеяться на него.
-
-```bash
-pnpm test              # офлайн: целостность golden set, математика ошибки, парсинг рубрики
-pnpm eval:judge:live   # платно: точность и стабильность на реальной модели
-```
-
-- `apps/api/src/evals/golden-set.json` — 20 раундов, от откровенно слабых до турнирных.
-- Офлайн-проверки идут в каждом CI-прогоне и стоят ноль.
-- Live-eval гоняется ночью (`.github/workflows/judge-eval.yml`) и падает, если средняя ошибка > 1.5 балла или разброс между прогонами > 2 баллов.
-
-**Важно:** набор сейчас в статусе `draft`. Ожидаемые баллы — черновик разработки, а не оценки живого тренера, поэтому он ловит *дрейф* судьи, но ещё не доказывает его *правоту*. Прежде чем ссылаться на него в разговоре со школой, каждый кейс должен подписать реальный тренер.
-
-## Данные учеников
-
-Все пользователи несовершеннолетние, поэтому:
-
-- при регистрации обязательны email родителя и согласие (`PARENTAL_CONSENT_REQUIRED`), версия текста согласия сохраняется;
-- транскрипты обезличиваются через `TRANSCRIPT_RETENTION_DAYS` (180 дней), **числовые оценки остаются** — история прогресса не теряется;
-- `GET /api/v1/me/export` выгружает всё, `DELETE /api/v1/me` удаляет безвозвратно.
-
-Подробности: [`docs/privacy-and-retention.md`](docs/privacy-and-retention.md).
-
-## Prompt injection
-
-Изоляция ввода ученика держится на делимитерах `<STUDENT_SPEECH>` и правилах в системном промпте. Regex-детектор — это **сигнал в логах, а не блокировка** (`INJECTION_ACTION=log`): блэклист не остановит настоящую атаку, но легко отбивает нормальные фразы дебатов вроде «теперь ты утверждаешь обратное». Логируется факт и шаблон, но никогда сам текст ребёнка.
-
-## Команды
-
-| Команда | Что делает |
-|---|---|
-| `pnpm dev` | API + web параллельно |
-| `pnpm dev:api` / `pnpm dev:web` | по отдельности |
-| `pnpm db:migrate` / `pnpm db:seed` / `pnpm db:studio` | миграции, сиды, Prisma Studio |
-| `pnpm infra:up` / `pnpm infra:down` / `pnpm infra:logs` | Docker stack |
-| `pnpm typecheck` / `pnpm lint` / `pnpm test` | проверки |
-| `pnpm eval:judge:live` | платный прогон судьи по golden set |
-| `pnpm retention:purge` | очистка данных по политике хранения (для крона) |
-
-## Что НЕ в этом MVP (YAGNI)
-
-- Kubernetes / Terraform (Docker Compose достаточно)
-- ElevenLabs (hook заложен, OpenAI TTS достаточно на старте)
-- Real-time WebSocket (раунд = последовательные REST-вызовы; живость диалога — за счёт авто-TTS)
-- Админ-панель (данные через Prisma Studio)
-- Платёжки (бесплатная бета для 10 школьников)
-
-## Документация
-
-- Дизайн-документ MVP: [`docs/plans/2026-07-13-debatotrainer-mvp-design.md`](docs/plans/2026-07-13-debatotrainer-mvp-design.md)
-- Промпты агентов: [`docs/prompts.md`](docs/prompts.md)
-- Данные и хранение: [`docs/privacy-and-retention.md`](docs/privacy-and-retention.md)
+See [`docs/product-positioning.md`](docs/product-positioning.md) for the wedge, buyer, north-star metrics and roadmap rules.

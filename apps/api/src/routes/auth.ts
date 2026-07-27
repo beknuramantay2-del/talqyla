@@ -1,4 +1,4 @@
-// Auth routes: registration, login, refresh, logout and password reset.
+// Auth routes: register, login, refresh, logout, password reset.
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import { createHash, randomBytes } from 'node:crypto';
@@ -8,19 +8,66 @@ import { conflict, unauthorized, sanitize, badRequest } from '../lib/errors.js';
 import { issueTokenPair, rotateRefreshToken } from '../auth/jwt.js';
 import { redis } from '../lib/redis.js';
 import type { TypedFastifyInstance, FastifyReply, FastifyRequest } from '../types/fastify.js';
-const SALT_ROUNDS = 12; const MAX_ATTEMPTS_PER_IP_EMAIL = 5; const MAX_ATTEMPTS_GLOBAL_EMAIL = 20; const LOCKOUT_MINUTES = 15; const DUMMY_HASH = bcrypt.hashSync('dummy-password-for-timing', SALT_ROUNDS);
-const RegisterBody = z.object({ email: emailSchema, password: passwordSchema, name: z.string().trim().min(1).max(100), parentEmail: emailSchema.optional(), parentalConsent: z.boolean().optional() });
-const LoginBody = z.object({ email: emailSchema, password: z.string().min(1) }); const RefreshBody = z.object({ refreshToken: z.string().optional() }).optional(); const LogoutBody = z.object({ refreshToken: z.string().optional() }).optional(); const PasswordResetRequestBody = z.object({ email: emailSchema }); const PasswordResetConfirmBody = z.object({ token: z.string().min(1), password: passwordSchema });
-const REFRESH_COOKIE = 'dt_refresh'; const REFRESH_MAX_AGE = 30 * 24 * 60 * 60;
-function setRefreshCookie(reply: FastifyReply, token: string) { reply.setCookie(REFRESH_COOKIE, token, { httpOnly: true, secure: env.NODE_ENV === 'production', sameSite: 'strict', path: '/api/v1/auth', maxAge: REFRESH_MAX_AGE }); }
-function getRefreshToken(req: FastifyRequest) { return req.cookies[REFRESH_COOKIE] ?? (req.body as { refreshToken?: string } | undefined)?.refreshToken; }
-function emailHash(email: string) { return createHash('sha256').update(email.toLowerCase()).digest('hex'); }
-async function checkLockout(ip: string, email: string) { let perIp = 0, global = 0; try { [perIp, global] = await Promise.all([redis.get(`lockout:${ip}:${emailHash(email)}`), redis.get(`lockout:global:${emailHash(email)}`)]).then(([a, b]) => [Number(a ?? 0), Number(b ?? 0)] as [number, number]); } catch { return; } if (perIp >= MAX_ATTEMPTS_PER_IP_EMAIL || global >= MAX_ATTEMPTS_GLOBAL_EMAIL) throw unauthorized(`Слишком много неудачных попыток. Попробуй через ${LOCKOUT_MINUTES} минут.`); }
-async function incrementAttempts(ip: string, email: string) { try { for (const key of [`lockout:${ip}:${emailHash(email)}`, `lockout:global:${emailHash(email)}`]) { const existing = await redis.ttl(key); if (existing < 0) await redis.setex(key, LOCKOUT_MINUTES * 60, 1); else await redis.incr(key); } } catch { /* best effort */ } }
-async function resetAttempts(ip: string, email: string) { try { await Promise.all([redis.del(`lockout:${ip}:${emailHash(email)}`), redis.del(`lockout:global:${emailHash(email)}`)]); } catch { /* best effort */ } }
+
+const SALT_ROUNDS = 12;
+const MAX_ATTEMPTS_PER_IP_EMAIL = 5;
+const MAX_ATTEMPTS_GLOBAL_EMAIL = 20;
+const LOCKOUT_MINUTES = 15;
+const DUMMY_HASH = bcrypt.hashSync('dummy-password-for-timing', SALT_ROUNDS);
+const RegisterBody = z.object({ email: emailSchema, password: passwordSchema, name: z.string().trim().min(1, 'Укажи имя').max(100), parentEmail: emailSchema.optional(), parentalConsent: z.boolean().optional() });
+const LoginBody = z.object({ email: emailSchema, password: z.string().min(1) });
+const RefreshBody = z.object({ refreshToken: z.string().optional() }).optional();
+const LogoutBody = z.object({ refreshToken: z.string().optional() }).optional();
+const PasswordResetRequestBody = z.object({ email: emailSchema });
+const PasswordResetConfirmBody = z.object({ token: z.string().min(1), password: passwordSchema });
+
+type RegisterBodyType = z.infer<typeof RegisterBody>;
+type LoginBodyType = z.infer<typeof LoginBody>;
+type RefreshBodyType = z.infer<typeof RefreshBody>;
+const REFRESH_COOKIE = 'dt_refresh';
+const REFRESH_MAX_AGE = 30 * 24 * 60 * 60;
+
+function setRefreshCookie(reply: FastifyReply, token: string) {
+  reply.setCookie(REFRESH_COOKIE, token, { httpOnly: true, secure: env.NODE_ENV === 'production', sameSite: 'strict', path: '/api/v1/auth', maxAge: REFRESH_MAX_AGE });
+}
+function getRefreshToken(req: FastifyRequest): string | undefined { return req.cookies[REFRESH_COOKIE] ?? (req.body as RefreshBodyType | undefined)?.refreshToken; }
+function emailHash(email: string): string { return createHash('sha256').update(email.toLowerCase()).digest('hex'); }
+
+async function checkLockout(ip: string, email: string): Promise<void> {
+  let perIp = 0; let global = 0;
+  try { const [a, b] = await Promise.all([redis.get(`lockout:${ip}:${emailHash(email)}`), redis.get(`lockout:global:${emailHash(email)}`)]); perIp = Number(a ?? 0); global = Number(b ?? 0); } catch { return; }
+  if (perIp >= MAX_ATTEMPTS_PER_IP_EMAIL || global >= MAX_ATTEMPTS_GLOBAL_EMAIL) throw unauthorized(`Слишком много неудачных попыток. Попробуй через ${LOCKOUT_MINUTES} минут.`);
+}
+async function incrementAttempts(ip: string, email: string): Promise<void> { try { for (const key of [`lockout:${ip}:${emailHash(email)}`, `lockout:global:${emailHash(email)}`]) { const existing = await redis.ttl(key); if (existing < 0) await redis.setex(key, LOCKOUT_MINUTES * 60, 1); else await redis.incr(key); } } catch { /* best effort */ } }
+async function resetAttempts(ip: string, email: string): Promise<void> { try { await Promise.all([redis.del(`lockout:${ip}:${emailHash(email)}`), redis.del(`lockout:global:${emailHash(email)}`)]); } catch { /* best effort */ } }
+
 export async function authRoutes(app: TypedFastifyInstance): Promise<void> {
-  app.post('/register', { schema: { body: RegisterBody }, config: { rateLimit: { max: 3, timeWindow: 300000 } } }, async (req, reply) => { const { email, password, name: rawName, parentEmail, parentalConsent } = req.body as z.infer<typeof RegisterBody>; if (env.PARENTAL_CONSENT_REQUIRED && (!parentalConsent || !parentEmail)) throw badRequest('Нужно подтверждение родителя или законного представителя.'); const existing = await prisma.user.findUnique({ where: { email } }); if (existing) throw conflict('Пользователь с таким email уже существует'); const user = await prisma.user.create({ data: { email, passwordHash: await bcrypt.hash(password, SALT_ROUNDS), name: sanitize(rawName), role: 'USER', parentEmail: parentEmail ?? null, parentalConsentAt: parentalConsent ? new Date() : null, parentalConsentVersion: parentalConsent ? env.CONSENT_VERSION : null } }); await prisma.studentProfile.create({ data: { userId: user.id, grade: 7, experienceLevel: 'BEGINNER' } }); const pair = await issueTokenPair(user.id, user.role); setRefreshCookie(reply, pair.refreshToken); return reply.code(201).send({ user: { id: user.id, email: user.email, name: user.name, role: user.role }, accessToken: pair.accessToken }); });
-  app.post('/login', { schema: { body: LoginBody }, config: { rateLimit: { max: 5, timeWindow: 60000 } } }, async (req, reply) => { const { email, password } = req.body as z.infer<typeof LoginBody>; await checkLockout(req.ip, email); const user = await prisma.user.findUnique({ where: { email } }); const ok = await bcrypt.compare(password, user?.passwordHash ?? DUMMY_HASH); if (!user || !ok) { await incrementAttempts(req.ip, email); throw unauthorized('Неверный email или пароль'); } await resetAttempts(req.ip, email); await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } }); const pair = await issueTokenPair(user.id, user.role); setRefreshCookie(reply, pair.refreshToken); return reply.send({ user: { id: user.id, email: user.email, name: user.name, role: user.role }, accessToken: pair.accessToken }); });
-  app.post('/refresh', { schema: { body: RefreshBody }, config: { rateLimit: { max: 10, timeWindow: 60000 } } }, async (req, reply) => { const presented = getRefreshToken(req); if (!presented) throw unauthorized('Отсутствует refresh token'); try { const pair = await rotateRefreshToken(presented); setRefreshCookie(reply, pair.refreshToken); return reply.send({ accessToken: pair.accessToken }); } catch { reply.clearCookie(REFRESH_COOKIE, { path: '/api/v1/auth' }); throw unauthorized('Недействительный refresh token'); } });
-  app.post('/logout', { preHandler: app.requireAuth, schema: { body: LogoutBody }, config: { rateLimit: { max: 10, timeWindow: 60000 } } }, async (req, reply) => { const presented = getRefreshToken(req); if (presented) { const [, jti] = presented.split('.'); if (jti) await prisma.refreshToken.updateMany({ where: { jti, userId: req.user!.id }, data: { revokedAt: new Date() } }); } reply.clearCookie(REFRESH_COOKIE, { path: '/api/v1/auth' }); return reply.send({ ok: true }); });
+  app.post('/register', { schema: { body: RegisterBody }, config: { rateLimit: { max: 3, timeWindow: 300000 } } }, async (req, reply) => {
+    const { email, password, name: rawName, parentEmail, parentalConsent } = req.body as RegisterBodyType;
+    if (env.PARENTAL_CONSENT_REQUIRED && (!parentalConsent || !parentEmail)) throw badRequest('Нужно подтверждение родителя или законного представителя.');
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) throw conflict('Пользователь с таким email уже существует');
+    const user = await prisma.user.create({ data: { email, passwordHash: await bcrypt.hash(password, SALT_ROUNDS), name: sanitize(rawName), role: 'USER', parentEmail: parentEmail ?? null, parentalConsentAt: parentalConsent ? new Date() : null, parentalConsentVersion: parentalConsent ? env.CONSENT_VERSION : null } });
+    await prisma.studentProfile.create({ data: { userId: user.id, grade: 7, experienceLevel: 'BEGINNER' } });
+    const pair = await issueTokenPair(user.id, user.role); setRefreshCookie(reply, pair.refreshToken);
+    return reply.code(201).send({ user: { id: user.id, email: user.email, name: user.name, role: user.role }, accessToken: pair.accessToken });
+  });
+  app.post('/login', { schema: { body: LoginBody }, config: { rateLimit: { max: 5, timeWindow: 60000 } } }, async (req, reply) => {
+    const { email, password } = req.body as LoginBodyType; await checkLockout(req.ip, email); const user = await prisma.user.findUnique({ where: { email } }); const ok = await bcrypt.compare(password, user?.passwordHash ?? DUMMY_HASH);
+    if (!user || !ok) { await incrementAttempts(req.ip, email); throw unauthorized('Неверный email или пароль'); } await resetAttempts(req.ip, email); await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } }); const pair = await issueTokenPair(user.id, user.role); setRefreshCookie(reply, pair.refreshToken); return reply.send({ user: { id: user.id, email: user.email, name: user.name, role: user.role }, accessToken: pair.accessToken });
+  });
+  app.post('/refresh', { schema: { body: RefreshBody }, config: { rateLimit: { max: 10, timeWindow: 60000 } } }, async (req, reply) => {
+    const presented = getRefreshToken(req); if (!presented) throw unauthorized('Отсутствует refresh token'); try { const pair = await rotateRefreshToken(presented); setRefreshCookie(reply, pair.refreshToken); return reply.send({ accessToken: pair.accessToken }); } catch { reply.clearCookie(REFRESH_COOKIE, { path: '/api/v1/auth' }); throw unauthorized('Недействительный refresh token'); }
+  });
+  app.post('/password-reset', { schema: { body: PasswordResetRequestBody }, config: { rateLimit: { max: 3, timeWindow: 3600000 } } }, async (req, reply) => {
+    const { email } = req.body as { email: string }; const user = await prisma.user.findUnique({ where: { email } }); const generic = { ok: true, message: 'Если email зарегистрирован, ссылка для сброса отправлена.' }; if (!user) return reply.send(generic);
+    const token = randomBytes(32).toString('hex'); const hashed = createHash('sha256').update(token).digest('hex'); await prisma.user.update({ where: { id: user.id }, data: { passwordResetToken: hashed, passwordResetExpires: new Date(Date.now() + 60 * 60 * 1000) } }); return reply.send(generic);
+  });
+  app.post('/password-reset/confirm', { schema: { body: PasswordResetConfirmBody }, config: { rateLimit: { max: 5, timeWindow: 60000 } } }, async (req, reply) => {
+    const { token, password } = req.body as { token: string; password: string }; const hashed = createHash('sha256').update(token).digest('hex'); const user = await prisma.user.findFirst({ where: { passwordResetToken: hashed, passwordResetExpires: { gt: new Date() } } }); if (!user) throw unauthorized('Недействительный или истёкший токен сброса'); if (await bcrypt.compare(password, user.passwordHash)) throw badRequest('Новый пароль не должен совпадать с текущим');
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS); await prisma.$transaction([prisma.user.update({ where: { id: user.id }, data: { passwordHash, passwordResetToken: null, passwordResetExpires: null } }), prisma.refreshToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } })]); return reply.send({ ok: true, message: 'Пароль успешно изменён. Войди заново.' });
+  });
+  app.post('/logout', { preHandler: app.requireAuth, schema: { body: LogoutBody }, config: { rateLimit: { max: 10, timeWindow: 60000 } } }, async (req, reply) => {
+    const presented = getRefreshToken(req); if (presented) { const [, jti] = presented.split('.'); if (jti) await prisma.refreshToken.updateMany({ where: { jti, userId: req.user!.id }, data: { revokedAt: new Date() } }); } reply.clearCookie(REFRESH_COOKIE, { path: '/api/v1/auth' }); return reply.send({ ok: true });
+  });
 }

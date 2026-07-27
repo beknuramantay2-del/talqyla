@@ -6,113 +6,16 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useEffect } from 'react';
 
-const SKILL_LABELS: Record<string, string> = {
-  STRUCTURE: 'Структура',
-  CONTENT: 'Содержание',
-  REFUTATION: 'Опровержение',
-  LOGIC: 'Логика',
-  DELIVERY: 'Подача',
-};
+const labels: Record<string, string> = { STRUCTURE: 'Структура', CONTENT: 'Доказательства', REFUTATION: 'Опровержение', LOGIC: 'Логика', DELIVERY: 'Подача' };
+const tone: Record<string, string> = { STRUCTURE: 'lav', CONTENT: 'mint', REFUTATION: 'peach', LOGIC: 'sky', DELIVERY: 'lav' };
 
 export default function ResultsPage() {
-  const { id } = useParams<{ id: string }>();
-  const { user, loading } = useAuth();
-  const router = useRouter();
-
-  useEffect(() => {
-    if (!loading && !user) router.push('/auth/login');
-  }, [user, loading, router]);
-
-  const { data: round, isLoading } = useQuery({
-    queryKey: ['round', id, 'results'],
-    queryFn: () => api.getRound(id),
-    enabled: !!user,
-  });
-
-  if (loading || isLoading) return <div className="p-8">Загрузка...</div>;
+  const { id } = useParams<{ id: string }>(); const { user, loading } = useAuth(); const router = useRouter();
+  useEffect(() => { if (!loading && !user) router.push('/auth/login'); }, [user, loading, router]);
+  const { data: round, isLoading } = useQuery({ queryKey: ['round', id, 'results'], queryFn: () => api.getRound(id), enabled: !!user });
+  if (loading || isLoading) return <div className="results-loading"><div className="skeleton-line"/><div className="skeleton-box"/><div className="skeleton-box short"/></div>;
   if (!user) return null;
-  if (!round?.feedback) return <div className="p-8">Оценка ещё не готова</div>;
-
-  const f = round.feedback;
-  const skillScores = round.skillScores ?? [];
-
-  return (
-    <main className="min-h-screen p-8">
-      <div className="mx-auto max-w-3xl">
-        <h1 className="mb-2 text-2xl font-bold">{round.topic?.title}</h1>
-        <p className="mb-6 text-gray-600">
-          Твоя позиция: {round.stance === 'PRO' ? 'ЗА' : 'ПРОТИВ'} · Обменов: {round.exchangesDone}
-        </p>
-
-        <div className="mb-8 rounded-xl border bg-white p-6">
-          <h2 className="mb-4 text-lg font-semibold">Оценка судьи</h2>
-
-          {skillScores.length > 0 && (
-            <div className="mb-4 flex flex-wrap gap-4">
-              {skillScores.map((s) => (
-                <div key={s.skill} className="rounded-lg bg-blue-50 p-3 text-center">
-                  <div className="text-2xl font-bold text-blue-700">{s.score}</div>
-                  <div className="text-xs text-gray-600">{SKILL_LABELS[s.skill] ?? s.skill}</div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="mb-2">
-            <div className="text-sm font-medium">Итоговая оценка</div>
-            <div className="text-3xl font-bold">{f.totalScore ?? '-'}/10</div>
-          </div>
-
-          {f.strengths.length > 0 && (
-            <div className="mb-3">
-              <div className="mb-1 text-sm font-medium text-green-700">Сильные стороны</div>
-              <ul className="list-disc pl-5 text-sm text-gray-700">
-                {f.strengths.map((s, i) => <li key={i}>{s}</li>)}
-              </ul>
-            </div>
-          )}
-
-          {f.weaknesses.length > 0 && (
-            <div className="mb-3">
-              <div className="mb-1 text-sm font-medium text-red-700">Слабые стороны</div>
-              <ul className="list-disc pl-5 text-sm text-gray-700">
-                {f.weaknesses.map((w, i) => <li key={i}>{w}</li>)}
-              </ul>
-            </div>
-          )}
-
-          {f.advice.length > 0 && (
-            <div>
-              <div className="mb-1 text-sm font-medium text-blue-700">Советы</div>
-              <ul className="list-disc pl-5 text-sm text-gray-700">
-                {f.advice.map((a, i) => <li key={i}>{a}</li>)}
-              </ul>
-            </div>
-          )}
-
-          {f.summaryText && (
-            <div className="mt-4 rounded-lg bg-gray-50 p-4">
-              <div className="mb-1 text-sm font-medium">Итог</div>
-              <p className="text-sm text-gray-700">{f.summaryText}</p>
-            </div>
-          )}
-        </div>
-
-        <div className="flex gap-4">
-          <button
-            onClick={() => router.push('/topics')}
-            className="rounded-lg bg-blue-600 px-6 py-3 text-white hover:bg-blue-700"
-          >
-            Новая тема
-          </button>
-          <button
-            onClick={() => router.push('/rounds')}
-            className="rounded-lg border px-6 py-3 text-gray-700 hover:bg-gray-100"
-          >
-            История
-          </button>
-        </div>
-      </div>
-    </main>
-  );
+  if (!round?.feedback) return <main className="results-page"><div className="results-empty"><span>◌</span><h1>Ballot ещё готовится</h1><p>Обнови страницу через несколько секунд. Судья проверяет реплики по пяти навыкам.</p><button className="result-button primary" onClick={() => router.refresh()}>Проверить снова</button></div></main>;
+  const feedback = round.feedback; const scores = round.skillScores ?? []; const average = scores.length ? scores.reduce((sum, item) => sum + item.score, 0) / scores.length : 0; const focus = scores.reduce((weakest, item) => item.score < weakest.score ? item : weakest, scores[0]);
+  return <main className="results-page"><header className="results-header"><button onClick={() => router.push('/rounds')} className="arena-back">← Моя история</button><span className="arena-brand"><span className="brand-mark">✦</span>Ballot от Talqyla</span><button className="result-button ghost" onClick={() => router.push('/topics')}>Новый раунд</button></header><div className="results-wrap"><section className="ballot-hero"><div><span className="arena-eyebrow">Разбор завершён · {round.exchangesDone} обмена</span><h1>{round.topic?.title}</h1><p>Твоя позиция: <strong>{round.stance === 'PRO' ? 'За' : 'Против'}</strong>. Это не приговор, а карта следующей тренировки.</p></div><div className="ballot-score"><strong>{feedback.totalScore}</strong><span>/ 50</span><small>{average.toFixed(1)} средний навык</small></div></section><section className="ballot-grid"><div className="ballot-main"><div className="section-title"><h2>Что увидел судья</h2><span>{scores.length} навыков</span></div><div className="score-list">{scores.map((score) => <div className={`score-row ${score.skill === focus?.skill ? 'weakest' : ''}`} key={score.skill}><div className={`score-icon ${tone[score.skill]}`}>{labels[score.skill]?.slice(0, 1)}</div><div className="score-name"><strong>{labels[score.skill] ?? score.skill}</strong><span>{score.skill === focus?.skill ? 'Следующий фокус' : 'По этому раунду'}</span></div><div className="score-track"><i style={{ width: `${score.score * 10}%` }}/></div><b>{score.score}<small>/10</small></b></div>)}</div></div><aside className="ballot-side"><div className="next-card"><span className="arena-eyebrow">Следующий раунд</span><h3>Прокачай {focus ? labels[focus.skill] : 'слабое место'}</h3><p>{feedback.advice?.[0] ?? 'Ответь на аргумент оппонента одной точной фразой, затем добавь доказательство.'}</p><button className="result-button primary" onClick={() => router.push('/topics')}>Тренировать это →</button></div><div className="quote-card"><span className="arena-eyebrow">Короткий вердикт</span><p>{feedback.summaryText}</p></div></aside></section><section className="feedback-grid"><article className="feedback-card good"><span>Сработало</span><h3>Твои сильные стороны</h3>{feedback.strengths?.slice(0, 2).map((item, index) => <p key={index}>✓ {item}</p>)}</article><article className="feedback-card improve"><span>Следующий шаг</span><h3>Что улучшить</h3>{feedback.weaknesses?.slice(0, 2).map((item, index) => <p key={index}>↗ {item}</p>)}</article></section></div></main>;
 }

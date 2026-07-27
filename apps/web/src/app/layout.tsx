@@ -1,18 +1,8 @@
-import type { Metadata } from 'next';
 import './globals.css';
 import { Providers } from './providers';
 
-export const metadata: Metadata = {
-  title: 'ДебатоТренер',
-  description: 'AI-тренер по дебатам для школьников 7–11 классов',
-};
+export const metadata = { title: 'Talqyla | Debate practice', description: 'Practice sharper arguments with an AI sparring partner.' };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <html lang="ru">
-      <body>
-        <Providers>{children}</Providers>
-      </body>
-    </html>
-  );
+  return <html lang="ru"><body><Providers>{children}</Providers></body></html>;
 }

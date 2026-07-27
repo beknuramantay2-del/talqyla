@@ -9,7 +9,9 @@
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vitest run"
+    "test": "vitest run",
+    "retention:purge": "tsx src/jobs/retention.cli.ts",
+    "eval:judge:live": "tsx src/evals/run-live-eval.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^9.4.0",

@@ -18,7 +18,9 @@ const SubmitTurnBody = z.object({
 const ListRoundsQuery = z.object({
   page: paginationSchema.shape.page,
   limit: paginationSchema.shape.limit,
-  status: z.enum(['SETUP', 'ARGUMENT_BUILT', 'IN_PROGRESS', 'AWAITING_JUDGE', 'COMPLETED', 'ABORTED']).optional(),
+  status: z
+    .enum(['SETUP', 'ARGUMENT_BUILT', 'IN_PROGRESS', 'AWAITING_JUDGE', 'JUDGING', 'COMPLETED', 'ABORTED'])
+    .optional(),
   sort: z.enum(['createdAt', 'updatedAt', 'exchangesDone']).optional().default('createdAt'),
   order: z.enum(['asc', 'desc']).optional().default('desc'),
 });
@@ -38,11 +40,11 @@ export async function roundRoutes(app: TypedFastifyInstance): Promise<void> {
     {
       preHandler: app.requireAuth,
       schema: { body: CreateRoundBody },
-      config: { rateLimit: { max: 5, timeWindow: 60000 } }, // 5 rounds/min per user
+      config: { rateLimit: { max: 5, timeWindow: 60000 } }, // 5 rounds/min
     },
     async (req, reply) => {
       const { topicId, stance, focusSkill } = req.body as CreateRoundBodyType;
-      const round = await roundService.createRound(req.user!.id, topicId, stance, focusSkill);
+      const round = await roundService.createRound(req.user!.id, topicId, stance, focusSkill, req.log);
       return reply.code(201).send(round);
     },
   );
@@ -67,10 +69,14 @@ export async function roundRoutes(app: TypedFastifyInstance): Promise<void> {
   // ── Submit argument ─────────────────────────────────────────────
   app.post<{ Params: IdParams }>(
     '/rounds/:id/argument',
-    { preHandler: [app.requireAuth, app.ownedRound], schema: { body: argumentSchema } },
+    {
+      preHandler: [app.requireAuth, app.ownedRound],
+      schema: { body: argumentSchema },
+      config: { rateLimit: { max: 10, timeWindow: 60000 } },
+    },
     async (req, reply) => {
       const body = req.body as z.infer<typeof argumentSchema>;
-      const result = await roundService.submitArgument(req.user!.id, req.params.id, body);
+      const result = await roundService.submitArgument(req.user!.id, req.params.id, body, req.log);
       return reply.code(result!.status === 'SETUP' ? 200 : 201).send(result);
     },
   );
@@ -85,15 +91,20 @@ export async function roundRoutes(app: TypedFastifyInstance): Promise<void> {
     },
     async (req) => {
       const { text, kind } = req.body as SubmitTurnBodyType;
-      return roundService.submitTurn(req.user!.id, req.params.id, text, kind);
+      return roundService.submitTurn(req.user!.id, req.params.id, text, kind, req.log);
     },
   );
 
   // ── Judge ───────────────────────────────────────────────────────
+  // The single most expensive call in the product. Rate-limited AND claimed
+  // atomically in the service so a double-click cannot buy two evaluations.
   app.post<{ Params: IdParams }>(
     '/rounds/:id/judge',
-    { preHandler: [app.requireAuth, app.ownedRound] },
-    async (req) => roundService.judgeRound(req.user!.id, req.params.id),
+    {
+      preHandler: [app.requireAuth, app.ownedRound],
+      config: { rateLimit: { max: 5, timeWindow: 60000 } },
+    },
+    async (req) => roundService.judgeRound(req.user!.id, req.params.id, req.log),
   );
 
   // ── Abort ───────────────────────────────────────────────────────

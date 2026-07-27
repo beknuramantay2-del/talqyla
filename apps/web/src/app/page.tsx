@@ -1,58 +1,20 @@
 'use client';
 
-import { useAuth } from '@/lib/auth';
 import Link from 'next/link';
+import { AppShell, Topbar, ProgressRing } from './components';
+import { useAuth } from '@/lib/auth';
+
+const bars = [3, 2, 4, 7, 3, 2, 1];
+const days = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
 
 export default function HomePage() {
-  const { user, loading, logout } = useAuth();
-
-  if (loading) {
-    return <div className="flex min-h-screen items-center justify-center">Загрузка...</div>;
-  }
-
-  if (!user) {
-    return (
-      <main className="flex min-h-screen flex-col items-center justify-center p-8">
-        <h1 className="mb-4 text-4xl font-bold">ДебатоТренер</h1>
-        <p className="mb-8 text-lg text-gray-600">AI-тренер по дебатам для школьников 7–11 классов</p>
-        <div className="flex gap-4">
-          <Link href="/auth/login" className="rounded-lg bg-blue-600 px-6 py-3 text-white hover:bg-blue-700">
-            Войти
-          </Link>
-          <Link href="/auth/register" className="rounded-lg border border-gray-300 px-6 py-3 text-gray-700 hover:bg-gray-100">
-            Зарегистрироваться
-          </Link>
-        </div>
-      </main>
-    );
-  }
-
-  return (
-    <main className="min-h-screen p-8">
-      <div className="mx-auto max-w-4xl">
-        <div className="mb-8 flex items-center justify-between">
-          <h1 className="text-2xl font-bold">ДебатоТренер</h1>
-          <div className="flex items-center gap-4">
-            <span className="text-gray-600">{user.name}</span>
-            <button onClick={logout} className="text-sm text-red-600 hover:text-red-800">Выйти</button>
-          </div>
-        </div>
-
-        <div className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-3">
-          <Link href="/topics" className="rounded-xl border p-6 hover:shadow-lg transition-shadow">
-            <h2 className="mb-2 text-lg font-semibold">Новые дебаты</h2>
-            <p className="text-sm text-gray-600">Выбери тему и начни тренировку</p>
-          </Link>
-          <Link href="/rounds" className="rounded-xl border p-6 hover:shadow-lg transition-shadow">
-            <h2 className="mb-2 text-lg font-semibold">Мои раунды</h2>
-            <p className="text-sm text-gray-600">История и результаты дебатов</p>
-          </Link>
-          <Link href="/dashboard" className="rounded-xl border p-6 hover:shadow-lg transition-shadow">
-            <h2 className="mb-2 text-lg font-semibold">Прогресс</h2>
-            <p className="text-sm text-gray-600">Статистика и навыки</p>
-          </Link>
-        </div>
-      </div>
-    </main>
-  );
+  const { user, loading } = useAuth();
+  if (loading) return <div className="form-page"><div className="eyebrow">Загружаем твой кабинет...</div></div>;
+  if (!user) return <main className="form-page"><div className="form-card" style={{textAlign:'center'}}><div className="brand" style={{justifyContent:'center',padding:0,marginBottom:28}}><span className="brand-mark">✦</span><span>Talqyla</span></div><h1>Говори увереннее.</h1><p>Тренируй аргументы в живом споре с AI-оппонентом и получай честный разбор по пяти навыкам.</p><div style={{display:'grid',gap:10}}><Link href="/auth/register" className="button primary">Начать тренировку</Link><Link href="/auth/login" className="button ghost">У меня уже есть аккаунт</Link></div></div></main>;
+  return <AppShell><Topbar title="Доброе утро" /><div className="dashboard-grid">
+    <section className="panel activity"><div className="panel-title"><h2>Твоя активность</h2><span>За эту неделю ⌄</span></div><div style={{display:'flex',alignItems:'baseline',gap:7}}><strong style={{fontSize:30,letterSpacing:'-.06em'}}>18.6</strong><span className="eyebrow">часов практики</span><span style={{marginLeft:'auto',color:'oklch(47% .12 165)',fontSize:12}}>↗ 12% к прошлой неделе</span></div><div className="chart">{bars.map((h,i)=><div className="bar-col" key={days[i]}><div className={`bar ${i===3?'hot':''}`} style={{height:`${h*10+8}%`}}/><span className="bar-label">{days[i]}</span></div>)}</div></section>
+    <section className="panel progress"><div className="panel-title"><h2>Прогресс обучения</h2><span>Общий ⌄</span></div><div style={{display:'flex',justifyContent:'center',padding:'2px 0 17px'}}><ProgressRing value={68}/></div><div className="progress-list"><div className="progress-row"><span className="progress-dot v">◈</span><div><strong>Аргументация</strong><small>24 завершено</small></div><a href="/dashboard">Детали</a></div><div className="progress-row"><span className="progress-dot p">◉</span><div><strong>Опровержение</strong><small>В работе</small></div><a href="/dashboard">Детали</a></div><div className="progress-row"><span className="progress-dot m">✦</span><div><strong>Подача речи</strong><small>Следующий фокус</small></div><a href="/dashboard">Детали</a></div></div></section>
+    <section className="panel continue"><div className="section-heading" style={{marginTop:0}}><div><h2>Продолжить обучение</h2><p>Короткие раунды, которые двигают тебя вперёд.</p></div><Link className="button secondary" href="/topics">Все темы</Link></div><div className="tabs"><button className="tab active">Все</button><button className="tab">В работе</button><button className="tab">Завершено</button></div><div className="course-grid"><Link className="course" href="/topics"><div className="course-art v">⌁</div><div className="course-body"><strong>Claim, Warrant, Impact</strong><small>Собери аргумент без воды</small><div className="course-meta"><span>◌ 12 мин</span><b>75%</b></div></div></Link><Link className="course" href="/topics"><div className="course-art m">⌬</div><div className="course-body"><strong>Сильное опровержение</strong><small>Не уходи от вопроса соперника</small><div className="course-meta"><span>◌ 18 мин</span><b>40%</b></div></div></Link><Link className="course" href="/topics"><div className="course-art p">◒</div><div className="course-body"><strong>Говори убедительно</strong><small>Подача и темп речи</small><div className="course-meta"><span>◌ 20 мин</span><b>60%</b></div></div></Link></div></section>
+    <section className="stats"><div className="stat"><span className="stat-icon">◈</span><div><strong>12</strong><span>тем пройдено</span></div></div><div className="stat"><span className="stat-icon" style={{background:'var(--mint)'}}>✓</span><div><strong>126</strong><span>реплик сказано</span></div></div><div className="stat"><span className="stat-icon" style={{background:'var(--peach)'}}>◷</span><div><strong>48ч</strong><span>в практике</span></div></div><div className="stat"><span className="stat-icon" style={{background:'var(--lavender)'}}>♨</span><div><strong>7</strong><span>дней подряд</span></div></div></section>
+  </div></AppShell>;
 }

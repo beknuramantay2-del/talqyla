@@ -53,6 +53,10 @@ export class ApiError extends Error {
   static conflict(msg = 'Конфликт') {
     return new ApiError('CONFLICT', msg);
   }
+  /** Spend/usage ceilings (daily round cap, daily AI budget). */
+  static rateLimited(msg = 'Слишком много запросов', details?: unknown) {
+    return new ApiError('RATE_LIMITED', msg, details);
+  }
   static upstream(msg = 'Ошибка внешнего сервиса') {
     return new ApiError('UPSTREAM', msg);
   }
@@ -64,6 +68,7 @@ export const badRequest = ApiError.badRequest;
 export const unauthorized = ApiError.unauthorized;
 export const forbidden = ApiError.forbidden;
 export const conflict = ApiError.conflict;
+export const rateLimited = ApiError.rateLimited;
 
 /** Sanitize user input — strip HTML tags, trim, collapse whitespace. */
 export function sanitize(input: string): string {

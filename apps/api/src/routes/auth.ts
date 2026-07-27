@@ -12,11 +12,12 @@
 //   - Password reset NEVER logs the token and NEVER returns it in the body.
 //     Delivery is via an external email sink (C2/C3).
 //   - After a password reset, ALL existing sessions are revoked (C4).
+//   - Users are minors: registration captures parental consent (see below).
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import { createHash, randomBytes } from 'node:crypto';
 import { prisma } from '@talqyla/db';
-import { emailSchema, passwordSchema } from '@talqyla/config';
+import { emailSchema, passwordSchema, env } from '@talqyla/config';
 import { conflict, unauthorized, sanitize, badRequest } from '../lib/errors.js';
 import { issueTokenPair, rotateRefreshToken } from '../auth/jwt.js';
 import { redis } from '../lib/redis.js';
@@ -40,6 +41,11 @@ const RegisterBody = z.object({
   email: emailSchema,
   password: passwordSchema,
   name: z.string().trim().min(1, 'Укажи имя').max(100),
+  // Data protection: every user is a school student aged ~12–18. A parent or
+  // legal guardian has to confirm before we record a child's voice and send it
+  // to third-party AI providers.
+  parentEmail: emailSchema.optional(),
+  parentalConsent: z.boolean().optional(),
 });
 
 const LoginBody = z.object({
@@ -82,18 +88,32 @@ function emailHash(email: string): string {
   return createHash('sha256').update(email.toLowerCase()).digest('hex');
 }
 
-/** Check account lockout. Considers BOTH per-IP-per-email AND global-per-email. */
+/**
+ * Check account lockout. Considers BOTH per-IP-per-email AND global-per-email.
+ *
+ * BUG FIX: the previous version threw `unauthorized()` from INSIDE the try
+ * block whose catch swallowed everything "in case Redis is down". The lockout
+ * therefore never fired — brute-force protection was decorative. Reads are
+ * fenced separately from the decision so a Redis outage fails open on counting
+ * (rate limiting still applies) but a real lockout always throws.
+ */
 async function checkLockout(ip: string, email: string): Promise<void> {
+  let perIp = 0;
+  let global = 0;
+
   try {
     const perIpKey = `lockout:${ip}:${emailHash(email)}`;
     const globalKey = `lockout:global:${emailHash(email)}`;
-    const [perIp, global] = await Promise.all([redis.get(perIpKey), redis.get(globalKey)]);
-    if ((perIp && Number(perIp) >= MAX_ATTEMPTS_PER_IP_EMAIL) ||
-        (global && Number(global) >= MAX_ATTEMPTS_GLOBAL_EMAIL)) {
-      throw unauthorized('Слишком много неудачных попыток. Попробуй через 15 минут.');
-    }
+    const [a, b] = await Promise.all([redis.get(perIpKey), redis.get(globalKey)]);
+    perIp = Number(a ?? 0);
+    global = Number(b ?? 0);
   } catch {
-    // If Redis is unavailable, allow login to proceed without lockout
+    // Redis unavailable — cannot evaluate lockout, let the request through.
+    return;
+  }
+
+  if (perIp >= MAX_ATTEMPTS_PER_IP_EMAIL || global >= MAX_ATTEMPTS_GLOBAL_EMAIL) {
+    throw unauthorized(`Слишком много неудачных попыток. Попробуй через ${LOCKOUT_MINUTES} минут.`);
   }
 }
 
@@ -102,22 +122,30 @@ async function incrementAttempts(ip: string, email: string): Promise<void> {
   const perIpKey = `lockout:${ip}:${emailHash(email)}`;
   const globalKey = `lockout:global:${emailHash(email)}`;
   const ttl = LOCKOUT_MINUTES * 60;
-  for (const key of [perIpKey, globalKey]) {
-    const existing = await redis.ttl(key);
-    if (existing < 0) {
-      await redis.setex(key, ttl, 1);
-    } else {
-      await redis.incr(key);
+  try {
+    for (const key of [perIpKey, globalKey]) {
+      const existing = await redis.ttl(key);
+      if (existing < 0) {
+        await redis.setex(key, ttl, 1);
+      } else {
+        await redis.incr(key);
+      }
     }
+  } catch {
+    /* Redis down — counting is best-effort, never break the login path. */
   }
 }
 
 /** Reset attempt counters on successful login. */
 async function resetAttempts(ip: string, email: string): Promise<void> {
-  await Promise.all([
-    redis.del(`lockout:${ip}:${emailHash(email)}`),
-    redis.del(`lockout:global:${emailHash(email)}`),
-  ]);
+  try {
+    await Promise.all([
+      redis.del(`lockout:${ip}:${emailHash(email)}`),
+      redis.del(`lockout:global:${emailHash(email)}`),
+    ]);
+  } catch {
+    /* best effort */
+  }
 }
 
 export async function authRoutes(app: TypedFastifyInstance): Promise<void> {
@@ -129,15 +157,36 @@ export async function authRoutes(app: TypedFastifyInstance): Promise<void> {
       config: { rateLimit: { max: 3, timeWindow: 300000 } }, // 3 per 5 min per IP
     },
     async (req, reply) => {
-      const { email, password, name: rawName } = req.body as RegisterBodyType;
+      const { email, password, name: rawName, parentEmail, parentalConsent } = req.body as RegisterBodyType;
       const name = sanitize(rawName);
+
+      // Parental consent gate. Kept in the handler (not the Zod schema) so the
+      // requirement can be switched off per-deployment without a schema fork.
+      if (env.PARENTAL_CONSENT_REQUIRED) {
+        if (parentalConsent !== true) {
+          throw badRequest(
+            'Нужно подтверждение родителя или законного представителя. Мы записываем голос ученика и передаём его AI-сервисам.',
+          );
+        }
+        if (!parentEmail) {
+          throw badRequest('Укажи email родителя или законного представителя.');
+        }
+      }
 
       const existing = await prisma.user.findUnique({ where: { email } });
       if (existing) throw conflict('Пользователь с таким email уже существует');
 
       const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
       const user = await prisma.user.create({
-        data: { email, passwordHash, name, role: 'USER' },
+        data: {
+          email,
+          passwordHash,
+          name,
+          role: 'USER',
+          parentEmail: parentEmail ?? null,
+          parentalConsentAt: parentalConsent === true ? new Date() : null,
+          parentalConsentVersion: parentalConsent === true ? env.CONSENT_VERSION : null,
+        },
       });
 
       await prisma.studentProfile.create({
@@ -149,6 +198,11 @@ export async function authRoutes(app: TypedFastifyInstance): Promise<void> {
       return reply.code(201).send({
         user: { id: user.id, email: user.email, name: user.name, role: user.role },
         accessToken: pair.accessToken,
+        consent: {
+          version: user.parentalConsentVersion,
+          grantedAt: user.parentalConsentAt,
+          retentionDays: env.TRANSCRIPT_RETENTION_DAYS,
+        },
       });
     },
   );

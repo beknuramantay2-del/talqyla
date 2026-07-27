@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import cookie from '@fastify/cookie';
@@ -20,6 +20,7 @@ import { topicsRoutes } from './routes/topics.js';
 import { dashboardRoutes } from './routes/dashboard.js';
 import { voiceRoutes } from './routes/voice.js';
 import { roundRoutes } from './routes/rounds.js';
+import { meRoutes } from './routes/me.js';
 
 type TypedFastify = FastifyInstance;
 
@@ -38,6 +39,7 @@ export async function buildApp() {
         '*.token',
         '*.resetToken',
         '*.refreshToken',
+        '*.parentEmail',
       ],
     },
   }).withTypeProvider<ZodTypeProvider>();
@@ -89,7 +91,18 @@ export async function buildApp() {
     max: env.RATE_LIMIT_MAX,
     timeWindow: env.RATE_LIMIT_WINDOW_MS,
     ...(env.NODE_ENV !== 'test' ? { redis: redis as never } : {}),
-    keyGenerator: (req) => `${req.ip}:${req.routeOptions.url ?? req.url}`,
+    // Bucket per SESSION, not per IP. A whole school behind one NAT used to
+    // share a single bucket, while one student on mobile could reset theirs by
+    // switching networks. The rate-limit hook runs before auth, so we key on a
+    // hash of the bearer token rather than a resolved user id.
+    keyGenerator: (req) => {
+      const auth = req.headers.authorization;
+      const subject =
+        auth && auth.startsWith('Bearer ')
+          ? `s:${createHash('sha256').update(auth.slice(7).trim()).digest('hex').slice(0, 24)}`
+          : `ip:${req.ip}`;
+      return `${subject}:${req.routeOptions.url ?? req.url}`;
+    },
     hook: 'onRequest',
     addHeadersOnExceeding: {
       'x-ratelimit-limit': true,
@@ -101,14 +114,6 @@ export async function buildApp() {
       'x-ratelimit-remaining': true,
       'x-ratelimit-reset': true,
       'retry-after': true,
-    },
-    // Always return Retry-After on 429
-    onExceeding: (req) => {
-      void req;
-    },
-    onExceeded: (req, key) => {
-      void req;
-      void key;
     },
   });
   await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } });
@@ -135,6 +140,7 @@ export async function buildApp() {
     async (api: TypedFastify) => {
       await api.register(healthRoutes);
       await api.register(authRoutes, { prefix: '/auth' });
+      await api.register(meRoutes);
       await api.register(onboardingRoutes);
       await api.register(topicsRoutes);
       await api.register(dashboardRoutes);

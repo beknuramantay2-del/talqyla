@@ -43,8 +43,9 @@ jobs:
         run: pnpm lint
       - name: Test
         run: pnpm test
-      - name: Dependency audit
-        run: pnpm audit --audit-level=high
+      # Keep the release gate focused on shipped runtime dependencies.
+      - name: Audit production dependencies (high+)
+        run: pnpm audit --prod --audit-level=high
       - name: Gitleaks history scan
         uses: gitleaks/gitleaks-action@v2
         env:

@@ -1,27 +1,16 @@
 # Talqyla security gate - SCHEDULED deep scan.
-#
-# This used to run on every push and pull request and repeated ci.yml almost
-# line for line: install, prisma generate, build, typecheck, lint, test, audit,
-# gitleaks. Double the minutes, double the red, zero extra signal. Per-commit
-# checks now live in ci.yml; this workflow is the weekly deep pass only.
-
 name: Security gate
-
 on:
   schedule:
     - cron: '17 3 * * 1'
   workflow_dispatch:
-
 concurrency:
   group: security-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 permissions:
   contents: read
   security-events: write
-
 env:
-  # Same reason as ci.yml: @talqyla/config validates the whole env on import.
   NODE_ENV: development
   DATABASE_URL: postgresql://talqyla:talqyla@localhost:5432/talqyla?schema=public
   REDIS_URL: redis://localhost:6379
@@ -29,7 +18,6 @@ env:
   NEXT_PUBLIC_API_URL: http://localhost:4000/api/v1
   CORS_ORIGIN: http://localhost:3000
   JWT_ACCESS_SECRET: ci-only-secret-not-a-credential
-
 jobs:
   dependency-and-secrets:
     name: Weekly dependency and secret sweep
@@ -39,56 +27,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: pnpm
-
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
-
       - name: Audit production dependencies (critical)
         run: pnpm audit --prod --audit-level=critical
-
       - name: Full advisory report (informational)
         continue-on-error: true
         run: pnpm audit --audit-level=low
-
       - name: Gitleaks history scan
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-# ---------------------------------------------------------------------------
-# CodeQL is intentionally DISABLED, not deleted.
-#
-# talqyla is a PRIVATE repository, and code scanning on private repos requires
-# GitHub Advanced Security. Without it every CodeQL run fails on the init step,
-# not because the code is bad but because the feature is not entitled. A job
-# that can only ever be red is worse than no job: it trains people to ignore red.
-#
-# docs/security-gate.md already admits GHAS is not enabled on the current plan,
-# so this keeps the config honest instead of claiming scanner coverage we do not
-# have.
-#
-# To turn it back on: enable GHAS (or make the repository public), then uncomment.
-#
-#  codeql:
-#    name: CodeQL JavaScript and TypeScript
-#    runs-on: ubuntu-latest
-#    timeout-minutes: 20
-#    steps:
-#      - uses: actions/checkout@v4
-#      - uses: github/codeql-action/init@v3
-#        with:
-#          languages: javascript-typescript
-#      - uses: github/codeql-action/autobuild@v3
-#      - uses: github/codeql-action/analyze@v3
-#        with:
-#          category: /language:javascript-typescript
-# ---------------------------------------------------------------------------

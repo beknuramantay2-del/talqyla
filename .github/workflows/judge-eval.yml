@@ -1,14 +1,5 @@
 # Nightly judge evaluation against the golden set.
-#
-# Costs real tokens, so it is NOT part of the per-push CI. It answers the one
-# question the product cannot ship without: are the marks we show students
-# stable and close to the reference marks?
-#
-# Requires the OPENROUTER_API_KEY repository secret. Without it the job skips
-# instead of failing, so forks are not spammed with red builds.
-
 name: Judge eval
-
 on:
   schedule:
     - cron: '0 3 * * *'
@@ -18,14 +9,11 @@ on:
         description: 'Порог средней абсолютной ошибки'
         required: false
         default: '1.5'
-
 jobs:
   eval:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      # The eval never touches Postgres or Redis, but @talqyla/config validates
-      # the whole env at import time, so these have to parse.
       NODE_ENV: development
       DATABASE_URL: postgresql://eval:eval@localhost:5432/eval?schema=public
       REDIS_URL: redis://localhost:6379
@@ -34,39 +22,30 @@ jobs:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       EVAL_MAE_THRESHOLD: ${{ github.event.inputs.maeThreshold || '1.5' }}
       EVAL_SPREAD_THRESHOLD: '2.0'
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Skip when no API key is configured
         id: guard
         run: |
           if [ -z "${OPENROUTER_API_KEY}" ]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "OPENROUTER_API_KEY не настроен — пропускаю live-eval."
+            echo "OPENROUTER_API_KEY не настроен - пропускаю live-eval."
           else
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
-
       - uses: pnpm/action-setup@v4
         if: steps.guard.outputs.run == 'true'
-        with:
-          version: 9
-
       - uses: actions/setup-node@v4
         if: steps.guard.outputs.run == 'true'
         with:
           node-version: 20
           cache: pnpm
-
       - name: Install dependencies
         if: steps.guard.outputs.run == 'true'
         run: pnpm install --frozen-lockfile
-
       - name: Generate Prisma client
         if: steps.guard.outputs.run == 'true'
         run: pnpm db:generate
-
       - name: Run judge eval
         if: steps.guard.outputs.run == 'true'
         run: pnpm eval:judge:live

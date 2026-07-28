@@ -1,6 +1,5 @@
 # Gitleaks config for Talqyla
-# Prevents committing secrets like API keys, tokens, connection strings
-
+# Prevents committing real secrets while allowing documented local placeholders.
 title = "Talqyla Gitleaks Config"
 
 [[rules]]
@@ -28,10 +27,11 @@ regex = '''(postgresql|postgres|mysql|mongodb|redis)://[^\s]{8,}'''
 tags = ["database", "connection"]
 
 [allowlist]
-description = "Allowlisted files and paths"
+description = "Documented placeholders and test fixtures only; never allow real secret values here"
 paths = [
   "(^|/)test-setup\\.ts$",
   "(^|/)prisma/",
+  "(^|/).env\\.example$",
   "\\.md$",
   "\\.gitleaks\\.toml$",
 ]

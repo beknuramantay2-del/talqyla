@@ -8,7 +8,7 @@
 //   - Refresh tokens use the rotating family pattern: a stale-token reuse
 //     revokes the whole family.
 //   - Cost tracking: every turn records tokens + USD cost so we can show
-//     real per-round economics on the admin dashboard.
+//     real per-round economics AND enforce a per-user daily budget.
 
 generator client {
   provider      = "prisma-client-js"
@@ -69,6 +69,9 @@ enum RoundStatus {
   ARGUMENT_BUILT
   IN_PROGRESS
   AWAITING_JUDGE
+  // Claimed by a judge call in flight. Exists so two parallel POSTs to
+  // /rounds/:id/judge cannot buy two evaluations for the same round.
+  JUDGING
   COMPLETED
   ABORTED
 }
@@ -111,8 +114,18 @@ model User {
   lastLoginAt          DateTime? @map("last_login_at")
   passwordResetToken   String?   @map("password_reset_token")
   passwordResetExpires DateTime? @map("password_reset_expires")
-  createdAt            DateTime  @default(now()) @map("created_at")
-  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  // ── Parental consent ────────────────────────────────────────────
+  // Every user is a school student (grades 7–11), i.e. a minor. We record
+  // their voice and send it to third-party AI processors, so consent from a
+  // parent/guardian is captured at registration and versioned: if the policy
+  // changes we can tell who agreed to which text.
+  parentEmail            String?   @map("parent_email")
+  parentalConsentAt      DateTime? @map("parental_consent_at")
+  parentalConsentVersion String?   @map("parental_consent_version")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   studentProfile StudentProfile?
   rounds         DebateRound[]
@@ -129,6 +142,7 @@ model StudentProfile {
   grade           Int              // 7–11
   experienceLevel ExperienceLevel  @default(BEGINNER) @map("experience_level")
   // The skill the dashboard recommends focusing on next (weakest recent skill).
+  // Read by the Debater prompt (agents/debater.ts FOCUS_BRIEF).
   focusSkill      SkillKey?        @map("focus_skill")
   // Free-text goal from onboarding: "Уверенность в речи" / "Аргументы" / ...
   goal            String?
@@ -167,14 +181,18 @@ model DebateRound {
   status        RoundStatus @default(SETUP)
   // The argument the student built (Claim / Warrant / Impact) — JSON.
   argument      Json?
-  // Full ordered transcript of the round. Source of truth for the Judge.
+  // Reserved for a denormalised transcript snapshot. The source of truth for
+  // the Judge is the ordered DebateTurn rows.
   transcript    Json        @default("[]") @map("transcript")
   // How many opponent↔student exchanges were completed.
   exchangesDone Int         @default(0) @map("exchanges_done")
-  // Accumulated USD cost across all turns (for analytics / per-user burn).
+  // Accumulated USD cost across all turns. Read by the daily spend guard in
+  // round.service.assertDailyBudget — this is a live control, not analytics.
   costEstimateUsd Decimal?  @db.Decimal(8, 4) @map("cost_estimate_usd")
   // Optional skill focus set when starting the round (drives Debater prompt).
   focusSkill    SkillKey?   @map("focus_skill")
+  // Set once the retention job has redacted this round's free text.
+  purgedAt      DateTime?   @map("purged_at")
   startedAt     DateTime    @default(now()) @map("started_at")
   completedAt   DateTime?   @map("completed_at")
   createdAt     DateTime    @default(now()) @map("created_at")
@@ -186,6 +204,10 @@ model DebateRound {
 
   @@index([userId, status])
   @@index([userId, completedAt])
+  // Daily spend guard: count + sum of today's rounds for one user.
+  @@index([userId, createdAt])
+  // Retention sweep scans by age.
+  @@index([createdAt])
   @@map("debate_rounds")
 }
 
@@ -210,13 +232,17 @@ model DebateTurn {
   costUsd      Decimal   @default(0) @db.Decimal(8, 6) @map("cost_usd")
   sttProvider  SttProvider? @map("stt_provider")
   ttsProvider  TtsProvider? @map("tts_provider")
+  // Set once the retention job has redacted this turn's content.
+  purgedAt     DateTime? @map("purged_at")
   createdAt    DateTime  @default(now()) @map("created_at")
 
   @@index([roundId, idx])
+  @@index([createdAt])
   @@map("debate_turns")
 }
 
 // Judge output: 5 rows per completed round, one per skill.
+// Numeric scores are deliberately NOT purged — they are the progress history.
 model SkillScore {
   id        String   @id @default(cuid())
   roundId   String   @map("round_id")
@@ -231,8 +257,9 @@ model SkillScore {
   @@map("skill_scores")
 }
 
-// Optional: persist the Judge's prose feedback separately from the structured
-// SkillScore rows (strengths/weaknesses + actionable advice as JSON).
+// The Judge's prose feedback, separate from the structured SkillScore rows.
+// strengths/weaknesses quote the student verbatim, so they expire with the
+// transcript; totalScore survives.
 model RoundFeedback {
   id           String   @id @default(cuid())
   roundId      String   @unique @map("round_id")
@@ -244,6 +271,7 @@ model RoundFeedback {
   summaryText  String  @map("summary_text") // human-readable overall verdict
   createdAt    DateTime @default(now()) @map("created_at")
 
+  @@index([createdAt])
   @@map("round_feedback")
 }
 
@@ -277,5 +305,6 @@ model RefreshToken {
 
   @@index([userId])
   @@index([family])
+  @@index([expiresAt])
   @@map("refresh_tokens")
 }

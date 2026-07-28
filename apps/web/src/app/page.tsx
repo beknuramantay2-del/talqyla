@@ -1,58 +1,25 @@
 'use client';
 
-import { useAuth } from '@/lib/auth';
 import Link from 'next/link';
+import { useAuth } from '@/lib/auth';
+
+const pillars = [
+  { no: '01', title: 'Собери мысль', text: 'Claim. Причина. Последствие. Никакой каши.', tone: 'lilac' },
+  { no: '02', title: 'Выдержи давление', text: 'Оппонент услышит слабое место и пойдёт прямо туда.', tone: 'yellow' },
+  { no: '03', title: 'Пойми следующий ход', text: 'Ballot превращается в одну конкретную тренировку.', tone: 'green' },
+];
 
 export default function HomePage() {
-  const { user, loading, logout } = useAuth();
-
-  if (loading) {
-    return <div className="flex min-h-screen items-center justify-center">Загрузка...</div>;
-  }
-
-  if (!user) {
-    return (
-      <main className="flex min-h-screen flex-col items-center justify-center p-8">
-        <h1 className="mb-4 text-4xl font-bold">ДебатоТренер</h1>
-        <p className="mb-8 text-lg text-gray-600">AI-тренер по дебатам для школьников 7–11 классов</p>
-        <div className="flex gap-4">
-          <Link href="/auth/login" className="rounded-lg bg-blue-600 px-6 py-3 text-white hover:bg-blue-700">
-            Войти
-          </Link>
-          <Link href="/auth/register" className="rounded-lg border border-gray-300 px-6 py-3 text-gray-700 hover:bg-gray-100">
-            Зарегистрироваться
-          </Link>
-        </div>
-      </main>
-    );
-  }
-
-  return (
-    <main className="min-h-screen p-8">
-      <div className="mx-auto max-w-4xl">
-        <div className="mb-8 flex items-center justify-between">
-          <h1 className="text-2xl font-bold">ДебатоТренер</h1>
-          <div className="flex items-center gap-4">
-            <span className="text-gray-600">{user.name}</span>
-            <button onClick={logout} className="text-sm text-red-600 hover:text-red-800">Выйти</button>
-          </div>
-        </div>
-
-        <div className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-3">
-          <Link href="/topics" className="rounded-xl border p-6 hover:shadow-lg transition-shadow">
-            <h2 className="mb-2 text-lg font-semibold">Новые дебаты</h2>
-            <p className="text-sm text-gray-600">Выбери тему и начни тренировку</p>
-          </Link>
-          <Link href="/rounds" className="rounded-xl border p-6 hover:shadow-lg transition-shadow">
-            <h2 className="mb-2 text-lg font-semibold">Мои раунды</h2>
-            <p className="text-sm text-gray-600">История и результаты дебатов</p>
-          </Link>
-          <Link href="/dashboard" className="rounded-xl border p-6 hover:shadow-lg transition-shadow">
-            <h2 className="mb-2 text-lg font-semibold">Прогресс</h2>
-            <p className="text-sm text-gray-600">Статистика и навыки</p>
-          </Link>
-        </div>
-      </div>
-    </main>
-  );
+  const { user, loading } = useAuth();
+  if (loading) return <main className="landing-loading">Открываем тренировочную площадку...</main>;
+  if (user) return <main className="landing-logged"><div className="landing-nav"><Link className="wordmark" href="/">talqyla<span>•</span></Link><Link className="landing-link" href="/topics">Начать раунд →</Link></div><section className="logged-hero"><span className="label">С возвращением, {user.name.split(' ')[0]}</span><h1>Следующий сильный<br/><em>ход мысли</em> уже ждёт.</h1><Link className="landing-cta" href="/topics">Открыть темы <span>↗</span></Link></section></main>;
+  return <main className="landing-page">
+    <nav className="landing-nav"><Link className="wordmark" href="/">talqyla<span>•</span></Link><div className="nav-center"><a href="#method">Метод</a><a href="#arena">Раунд</a><a href="#ballot">Ballot</a></div><div className="nav-right"><Link href="/auth/login">Войти</Link><Link className="nav-pill" href="/auth/register">Начать бесплатно <span>↗</span></Link></div></nav>
+    <section className="landing-hero"><div className="hero-copy"><span className="label">Тренер школьных дебатов · 7–11 класс</span><h1>Не просто спорь.<br/><em>Тренируй ход мысли.</em></h1><p>Короткий структурированный раунд на русском и казахском: собери аргумент, выдержи перекрёстный вопрос и получи ballot, который говорит, что делать дальше.</p><div className="hero-actions"><Link className="landing-cta" href="/auth/register">Начать первый раунд <span>↗</span></Link><span className="microcopy">Без партнёра. 10 минут.<br/>С понятным следующим шагом.</span></div></div><div className="hero-art" aria-label="Абстрактная иллюстрация дебатной арены"><div className="orbit o1"></div><div className="orbit o2"></div><div className="orbit o3"></div><div className="orbit-core">C<br/><span>↗</span><br/>I</div><div className="scribble">claim<br/><i>↘</i><br/>impact</div><div className="sticker">1 focus<br/>per round</div></div></section>
+    <section className="marquee"><span>THINK CLEARER</span><i>✳</i><span>SPEAK SHARPER</span><i>✳</i><span>REPEAT THE MOVE</span><i>✳</i><span>THINK CLEARER</span></section>
+    <section id="method" className="method-section"><div className="section-intro"><span className="label">Почему это работает</span><h2>У каждого раунда<br/>есть <em>работа.</em></h2><p>Talqyla не подкидывает случайные вопросы. Он тренирует конкретный навык и помнит, что именно просело в прошлый раз.</p></div><div className="pillar-grid">{pillars.map((item)=><article className={`pillar ${item.tone}`} key={item.no}><span>{item.no}</span><h3>{item.title}</h3><p>{item.text}</p><b>↗</b></article>)}</div></section>
+    <section id="arena" className="arena-preview"><div><span className="label">Внутри раунда</span><h2>Три обмена.<br/><em>Ноль воды.</em></h2><p>Оппонент не произносит красивый монолог. Он цитирует твою фразу, находит дыру и задаёт следующий вопрос.</p><Link className="text-cta" href="/auth/register">Посмотреть, как это работает <span>↗</span></Link></div><div className="mini-arena"><div className="mini-top"><span>СПАРРИНГ · 02 / 03</span><span className="live-dot">● live</span></div><div className="quote">«Форма решает симптом,<br/>а не причину.»</div><div className="counter">Но если она убирает<br/>один канал сравнения,<br/>почему это уже не улучшение?</div><div className="answer">Сначала назови clash.<br/>Потом дай причину.</div><div className="mini-bottom"><span>ФОКУС: ОПРОВЕРЖЕНИЕ</span><span>→ твоя очередь</span></div></div></section>
+    <section id="ballot" className="ballot-section"><div className="ballot-copy"><span className="label">После раунда</span><h2>Не «молодец».<br/><em>Конкретно.</em></h2><p>Ballot показывает пять навыков, цитирует момент из твоей речи и превращает слабое место в следующий drill.</p><Link className="landing-cta" href="/auth/register">Получить свой первый ballot <span>↗</span></Link></div><div className="ballot-card"><div className="ballot-card-top"><span>talqyla / ballot</span><span>ROUND 04</span></div><div className="score-line"><strong>34</strong><span>/ 50<br/><small>текущий раунд</small></span></div><div className="score-bars"><div><span>СТРУКТУРА</span><i><b style={{width:'80%'}}/></i><strong>8</strong></div><div className="weak"><span>ОПРОВЕРЖЕНИЕ</span><i><b style={{width:'40%'}}/></i><strong>4</strong></div><div><span>ЛОГИКА</span><i><b style={{width:'70%'}}/></i><strong>7</strong></div></div><div className="ballot-note">Следующий фокус<br/><strong>Назови аргумент оппонента<br/>до того, как будешь отвечать.</strong></div></div></section>
+    <footer className="landing-footer"><Link className="wordmark" href="/">talqyla<span>•</span></Link><span>Сделано для тех, кто хочет думать вслух.</span><Link href="/auth/register">Начать →</Link></footer>
+  </main>;
 }

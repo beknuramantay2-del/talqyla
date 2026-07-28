@@ -5,7 +5,7 @@
 // deterministic test data so the entire round flow works without API keys.
 //
 // Design principles:
-//   1. One provider instance per process (created in index.ts, shared everywhere).
+//   1. One provider instance per process (see `getAiProvider`).
 //   2. Every call returns a typed result + cost metadata (for per-round economics).
 //   3. Errors from upstream services are wrapped in ApiError(UPSTREAM).
 //   4. Stub mode is zero-cost and deterministic — ideal for UI development.
@@ -28,6 +28,11 @@ export interface LlmOptions {
   jsonMode?: boolean;
   maxTokens?: number;
   temperature?: number;
+  /**
+   * Mark the system prompt as cacheable (Anthropic prompt caching).
+   * Only worth it for long, byte-identical system prompts.
+   */
+  cacheSystem?: boolean;
 }
 
 export interface LlmResult {
@@ -36,8 +41,13 @@ export interface LlmResult {
   tokensIn: number;
   /** Completion tokens (output) — from usage field. */
   tokensOut: number;
-  /** Estimated USD cost based on model pricing. */
+  /** USD cost. Reported by OpenRouter when available, else estimated. */
   costUsd: number;
+  /**
+   * Where costUsd came from. A hardcoded price table drifts the moment a
+   * provider changes pricing, so we track which number we actually used.
+   */
+  costSource: 'provider' | 'estimate';
 }
 
 // ─── STT types (speech → text) ────────────────────────────────────
@@ -71,6 +81,8 @@ export interface TtsResult {
   contentType: string;
   /** Which provider handled the request. */
   provider: string;
+  /** Characters actually synthesised — TTS is billed per character. */
+  chars: number;
 }
 
 // ─── Provider interface ────────────────────────────────────────────
@@ -89,15 +101,13 @@ export interface AiProvider {
 
 // ─── OpenRouter LLM implementation ───────────────────────────────
 // Docs: https://openrouter.ai/docs/api-reference/chat-completion
-//
-// OpenRouter wraps Anthropic/OpenAI/etc behind a unified chat-completions API.
-// For Anthropic models it supports prompt caching via the anthropic-beta header.
 
 /** Stub LLM — returns deterministic responses for UI development without API keys. */
 function createStubLlm() {
   return async function complete(opts: LlmOptions): Promise<LlmResult> {
-    const isJudge = opts.model.includes('sonnet');
     if (opts.jsonMode) {
+      // The judge prompt is the only one that asks for a `scores` array.
+      const isJudge = opts.system.includes('AI-судья');
       const json = isJudge
         ? {
             scores: [
@@ -110,32 +120,41 @@ function createStubLlm() {
             strengths: ['Чёткая структура Claim-Warrant-Impact', 'Уверенная подача'],
             weaknesses: ['Не хватает фактов и статистики', 'Опровержение аргументов оппонента поверхностно'],
             advice: ['Используй больше конкретных примеров', 'Слушай оппонента внимательнее и отвечай на его пункты'],
+            summaryText: 'Ровный раунд: структура есть, доказательной базы не хватает.',
           }
         : {
-            text: 'Я понимаю вашу точку зрения, но позвольте предложить другой взгляд на эту проблему. Ваш аргумент основан на предположении, которое не учитывает несколько важных факторов. Во-первых, статистика показывает обратное — согласно последним исследованиям, большинство экспертов сходятся во мнении, что ситуация сложнее, чем кажется на первый взгляд.',
-            question: 'Как вы можете обосновать ваше утверждение с учётом этих данных?',
-            citationRefs: ['аргумент ученика об утверждении'],
+            text: 'Понимаю твою позицию, но ты сказал «домашние задания не приносят пользы» — это утверждение без данных. Исследования показывают обратное для старших классов.',
+            kind: 'REBUTTAL',
+            question: 'На какие исследования ты опираешься?',
+            citationRefs: ['домашние задания не приносят пользы'],
           };
-      return {
-        text: JSON.stringify(json),
-        tokensIn: 150,
-        tokensOut: 120,
-        costUsd: 0,
-      };
+      return { text: JSON.stringify(json), tokensIn: 150, tokensOut: 120, costUsd: 0, costSource: 'estimate' };
     }
     return {
       text: 'Я считаю, что это сложный вопрос, требующий всестороннего рассмотрения. У вашей позиции есть сильные стороны, но также и уязвимости, которые стоит проработать.',
       tokensIn: 100,
       tokensOut: 50,
       costUsd: 0,
+      costSource: 'estimate',
     };
   };
 }
 
+/**
+ * Fallback price table (USD per token), used ONLY when OpenRouter does not
+ * report an actual cost. Verified 2026-07. Treat as an estimate, not truth —
+ * `costSource` tells you which one you got.
+ */
 const LLM_PRICING: Record<string, { input: number; output: number }> = {
-  'anthropic/claude-3.5-haiku': { input: 1.0e-6, output: 5.0e-6 }, // $1/$5 per MTok
-  'anthropic/claude-3.5-sonnet': { input: 3.0e-6, output: 15.0e-6 }, // $3/$15 per MTok
+  'anthropic/claude-haiku-4.5': { input: 1.0e-6, output: 5.0e-6 },
+  'anthropic/claude-sonnet-4.5': { input: 3.0e-6, output: 15.0e-6 },
+  'anthropic/claude-3.5-haiku': { input: 0.8e-6, output: 4.0e-6 },
+  'anthropic/claude-3.5-sonnet': { input: 3.0e-6, output: 15.0e-6 },
 };
+
+// Anthropic only starts caching at ~2048 prompt tokens for Haiku-class models.
+// Below that a cache_control breakpoint is a no-op — not a bug, just physics.
+const CACHE_MIN_CHARS = 6000;
 
 function createOpenRouterLlm() {
   const baseUrl = env.LLM_BASE_URL;
@@ -145,8 +164,13 @@ function createOpenRouterLlm() {
 
   return async function complete(opts: LlmOptions): Promise<LlmResult> {
     if (!apiKey) {
-      throw ApiError.upstream('OPENROUTER_API_KEY не задан. Задай ключ или используй STT_PROVIDER=stub для разработки.');
+      throw ApiError.upstream('OPENROUTER_API_KEY не задан. Задай ключ или оставь провайдеры в режиме stub.');
     }
+
+    const isAnthropic = opts.model.includes('anthropic/');
+    // Only claim caching when we actually place a breakpoint. The previous
+    // version sent the beta header with no cache_control, which did nothing.
+    const useCache = Boolean(opts.cacheSystem) && isAnthropic && opts.system.length >= CACHE_MIN_CHARS;
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -154,17 +178,23 @@ function createOpenRouterLlm() {
       'HTTP-Referer': referer,
       'X-Title': appTitle,
     };
+    if (useCache) headers['anthropic-beta'] = 'prompt-caching-2024-07-31';
 
-    // Enable Anthropic prompt caching when using Claude models.
-    if (opts.model.includes('anthropic/claude')) {
-      headers['anthropic-beta'] = 'prompt-caching-2024-07-31';
-    }
+    const systemMessage = useCache
+      ? {
+          role: 'system',
+          content: [{ type: 'text', text: opts.system, cache_control: { type: 'ephemeral' } }],
+        }
+      : { role: 'system', content: opts.system };
 
     const body: Record<string, unknown> = {
       model: opts.model,
-      messages: [{ role: 'system', content: opts.system }, ...opts.messages],
+      messages: [systemMessage, ...opts.messages],
       max_tokens: opts.maxTokens ?? 1024,
       temperature: opts.temperature ?? 0.3,
+      // Ask OpenRouter for the real billed cost instead of guessing from a
+      // price table that goes stale the moment a provider changes pricing.
+      usage: { include: true },
     };
 
     if (opts.jsonMode) {
@@ -185,17 +215,25 @@ function createOpenRouterLlm() {
 
     const json = (await res.json()) as {
       choices: Array<{ message: { content: string } }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number };
+      usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
     };
 
     const text = json.choices[0]?.message?.content ?? '';
     const tokensIn = json.usage?.prompt_tokens ?? 0;
     const tokensOut = json.usage?.completion_tokens ?? 0;
 
-    const pricing = LLM_PRICING[opts.model] ?? { input: 3.0e-6, output: 15.0e-6 };
-    const costUsd = tokensIn * pricing.input + tokensOut * pricing.output;
+    if (typeof json.usage?.cost === 'number') {
+      return { text, tokensIn, tokensOut, costUsd: json.usage.cost, costSource: 'provider' };
+    }
 
-    return { text, tokensIn, tokensOut, costUsd };
+    const pricing = LLM_PRICING[opts.model] ?? LLM_PRICING['anthropic/claude-haiku-4.5'];
+    return {
+      text,
+      tokensIn,
+      tokensOut,
+      costUsd: tokensIn * pricing.input + tokensOut * pricing.output,
+      costSource: 'estimate',
+    };
   };
 }
 
@@ -204,7 +242,6 @@ function createOpenRouterLlm() {
 /** Stub STT — returns deterministic Russian text for UI development. */
 function createStubStt() {
   return async function transcribe(_opts: SttOptions): Promise<SttResult> {
-    // Simulates a 90-second speech with plausible debate content.
     return {
       text: 'Я считаю, что домашние задания необходимо запретить. Во-первых, они создают огромный стресс для школьников, которые уже перегружены уроками и кружками. Во-вторых, домашние задания часто не приносят реальной пользы — многие ученики просто копируют ответы у одноклассников или в интернете, не вникая в материал. И наконец, время, которое тратится на домашние задания, можно было бы потратить на полноценный отдых, хобби или общение с семьёй, что важнее для развития личности.',
       durationSec: 45,
@@ -242,11 +279,7 @@ function createGroqStt() {
     }
 
     const json = (await res.json()) as { text?: string; duration?: number };
-    return {
-      text: json.text ?? '',
-      durationSec: json.duration ?? 0,
-      provider: 'groq',
-    };
+    return { text: json.text ?? '', durationSec: json.duration ?? 0, provider: 'groq' };
   };
 }
 
@@ -279,11 +312,7 @@ function createOpenAiStt() {
     }
 
     const json = (await res.json()) as { text?: string; duration?: number };
-    return {
-      text: json.text ?? '',
-      durationSec: json.duration ?? 0,
-      provider: 'openai',
-    };
+    return { text: json.text ?? '', durationSec: json.duration ?? 0, provider: 'openai' };
   };
 }
 
@@ -301,24 +330,30 @@ function createStt(): { transcribe: (opts: SttOptions) => Promise<SttResult> } {
 
 // ─── TTS implementations ─────────────────────────────────────────
 
+/**
+ * TTS is billed per character and is ~50% of per-round COGS. Truncate at the
+ * provider boundary as well as at the route — belt and braces, because every
+ * caller of this method spends real money.
+ */
+function capTtsText(text: string): string {
+  return text.length > env.TTS_MAX_CHARS ? `${text.slice(0, env.TTS_MAX_CHARS - 1)}…` : text;
+}
+
 /** Stub TTS — returns a minimal silent mp3 placeholder. */
 function createStubTts() {
-  // Minimal valid mp3 frame (silent, ~0.1s). Generated once, reused.
-  // ID3 header + MPEG frame (MPEG1 Layer3, 128kbps, 44100Hz, mono).
   const SILENT_MP3 = Buffer.from(
     'ID3' +
-      // ID3v2.3 header: 10 bytes
       '\x03\x00\x00\x00\x00\x00\x00\x00' +
-      // Minimal MPEG audio frame
       '\xff\xfb\x90\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
     'binary',
   );
 
-  return async function synthesize(_opts: TtsOptions): Promise<TtsResult> {
+  return async function synthesize(opts: TtsOptions): Promise<TtsResult> {
     return {
       audio: SILENT_MP3,
       contentType: 'audio/mpeg',
       provider: 'stub',
+      chars: capTtsText(opts.text).length,
     };
   };
 }
@@ -332,6 +367,8 @@ function createOpenAiTts() {
       throw ApiError.upstream('OPENAI_API_KEY не задан.');
     }
 
+    const input = capTtsText(opts.text);
+
     const res = await fetch('https://api.openai.com/v1/audio/speech', {
       method: 'POST',
       headers: {
@@ -340,7 +377,7 @@ function createOpenAiTts() {
       },
       body: JSON.stringify({
         model: 'tts-1',
-        input: opts.text,
+        input,
         voice: opts.voice ?? env.TTS_VOICE,
         response_format: 'mp3',
       }),
@@ -353,7 +390,7 @@ function createOpenAiTts() {
     }
 
     const audio = Buffer.from(await res.arrayBuffer());
-    return { audio, contentType: 'audio/mpeg', provider: 'openai' };
+    return { audio, contentType: 'audio/mpeg', provider: 'openai', chars: input.length };
   };
 }
 
@@ -378,4 +415,12 @@ export function createAiProvider(): AiProvider {
     stt: { transcribe: createStt().transcribe },
     tts: { synthesize: createTts().synthesize },
   };
+}
+
+let singleton: AiProvider | null = null;
+
+/** Process-wide provider. Prefer this over calling createAiProvider() again. */
+export function getAiProvider(): AiProvider {
+  if (!singleton) singleton = createAiProvider();
+  return singleton;
 }

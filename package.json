@@ -23,6 +23,8 @@
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down",
     "infra:logs": "docker compose logs -f",
+    "retention:purge": "pnpm --filter @talqyla/api run retention:purge",
+    "eval:judge:live": "pnpm --filter @talqyla/api run eval:judge:live",
     "postinstall": "pnpm --filter @talqyla/db prisma:generate"
   },
   "devDependencies": {

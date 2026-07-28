@@ -1,96 +1,19 @@
 'use client';
-
-import { useQuery } from '@tanstack/react-query';
+import Link from 'next/link';
+import { useEffect, useState } from 'react';
+import { AppShell, Topbar } from '../components';
 import { api } from '@/lib/api';
-import { useAuth } from '@/lib/auth';
-import { useRouter } from 'next/navigation';
-import { useEffect } from 'react';
+import type { DashboardStats, SkillKey } from '@/types';
 
-const SKILL_LABELS: Record<string, string> = {
-  STRUCTURE: 'Структура',
-  CONTENT: 'Содержание',
-  REFUTATION: 'Опровержение',
-  LOGIC: 'Логика',
-  DELIVERY: 'Подача',
-};
+const labels: Record<SkillKey, string> = { STRUCTURE: 'Структура', CONTENT: 'Содержание', REFUTATION: 'Опровержение', LOGIC: 'Логика', DELIVERY: 'Подача' };
+const tones: Record<SkillKey, string> = { STRUCTURE: 'var(--lavender)', CONTENT: 'var(--mint)', REFUTATION: 'var(--peach)', LOGIC: 'var(--sky)', DELIVERY: 'var(--lavender)' };
 
 export default function DashboardPage() {
-  const { user, loading } = useAuth();
-  const router = useRouter();
-
-  useEffect(() => {
-    if (!loading && !user) router.push('/auth/login');
-  }, [user, loading, router]);
-
-  const { data, isLoading } = useQuery({
-    queryKey: ['dashboard'],
-    queryFn: api.getDashboard,
-    enabled: !!user,
-  });
-
-  if (loading || isLoading) return <div className="p-8">Загрузка...</div>;
-  if (!user) return null;
-
-  const stats = data?.stats;
-  const profile = data?.profile;
-  const radar = stats?.radarData;
-  const hasRadar = !!radar?.length;
-
-  return (
-    <main className="min-h-screen p-8">
-      <div className="mx-auto max-w-4xl">
-        <h1 className="mb-6 text-2xl font-bold">Мой прогресс</h1>
-
-        <div className="mb-8 grid grid-cols-2 gap-4 md:grid-cols-4">
-          <div className="rounded-xl border bg-white p-4 text-center">
-            <div className="text-2xl font-bold text-blue-700">{profile?.roundsPlayed ?? stats?.totalRounds ?? 0}</div>
-            <div className="text-xs text-gray-600">Сыграно раундов</div>
-          </div>
-          <div className="rounded-xl border bg-white p-4 text-center">
-            <div className="text-2xl font-bold text-green-700">{profile?.grade ?? '-'}</div>
-            <div className="text-xs text-gray-600">Класс</div>
-          </div>
-          <div className="rounded-xl border bg-white p-4 text-center">
-            <div className="text-2xl font-bold text-orange-700">{stats?.averageScore?.toFixed(1) ?? '-'}</div>
-            <div className="text-xs text-gray-600">Средняя оценка</div>
-          </div>
-          <div className="rounded-xl border bg-white p-4 text-center">
-            <div className="text-2xl font-bold text-purple-700">{profile?.experienceLevel ?? '-'}</div>
-            <div className="text-xs text-gray-600">Уровень</div>
-          </div>
-        </div>
-
-        {hasRadar && (
-          <div className="rounded-xl border bg-white p-6">
-            <h2 className="mb-4 text-lg font-semibold">Навыки</h2>
-            <div className="space-y-4">
-              {radar.map((skill: { skill: string; score: number }) => {
-                const pct = Math.round((skill.score / 10) * 100);
-                return (
-                  <div key={skill.skill}>
-                    <div className="mb-1 flex justify-between text-sm">
-                      <span>{SKILL_LABELS[skill.skill] ?? skill.skill}</span>
-                      <span className="text-gray-500">{skill.score}/10</span>
-                    </div>
-                    <div className="h-2 w-full rounded-full bg-gray-200">
-                      <div
-                        className="h-2 rounded-full bg-blue-600 transition-all"
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {!hasRadar && (
-          <div className="rounded-xl border bg-white p-8 text-center text-gray-500">
-            Пройди несколько раундов, чтобы увидеть статистику по навыкам.
-          </div>
-        )}
-      </div>
-    </main>
-  );
+  const [data, setData] = useState<DashboardStats | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => { api.getDashboard().then(setData).catch((err) => setError(err instanceof Error ? err.message : 'Не удалось загрузить dashboard')); }, []);
+  if (error) return <AppShell><Topbar eyebrow="Твой прогресс" title="Не удалось загрузить данные" /><div className="panel error-state"><p>{error}</p><button className="button primary" onClick={() => window.location.reload()}>Повторить</button></div></AppShell>;
+  if (!data) return <AppShell><Topbar eyebrow="Твой прогресс" title="Собираем картину навыков" /><div className="dashboard-grid"><div className="panel skeleton wide" /><div className="panel skeleton wide" /></div></AppShell>;
+  const focus = data.stats.focusSkill;
+  return <AppShell><Topbar eyebrow="Твой прогресс" title="Навыки растут от раунда к раунду" /><div className="dashboard-grid"><section className="panel" style={{ gridColumn: '1 / -1' }}><div className="section-heading" style={{ marginTop: 0 }}><div><h2>Карта навыков</h2><p>Оценки из завершённых раундов, без декоративных метрик.</p></div><Link href="/topics" className="button primary">Новый раунд</Link></div><div className="skill-grid">{data.stats.radarData.map((item) => <div key={item.skill} className={`skill-card ${focus === item.skill ? 'focus-skill' : ''}`} style={{ background: tones[item.skill] }}><small>{labels[item.skill]}</small><strong>{item.score.toFixed(1)}</strong><span>из 10</span>{focus === item.skill && <em>Следующий фокус</em>}</div>)}</div></section><section className="panel" style={{ gridColumn: '1 / -1' }}><div className="panel-title"><h2>Что делать сегодня</h2><span>Решение на основе последних оценок</span></div>{focus ? <div className="focus-action"><span className="progress-dot p">◉</span><div><strong>Тренировать {labels[focus]}</strong><p>Это твой самый слабый навык по последнему разбору. Следующий оппонент будет бить именно туда.</p></div><Link href="/topics" className="button secondary">Начать</Link></div> : <div className="empty-action"><strong>Сыграй первый раунд</strong><p>После него появится персональный фокус и сравнение навыков.</p><Link href="/topics" className="button primary">Выбрать тему</Link></div>}</section><section className="panel" style={{ gridColumn: '1 / -1' }}><div className="panel-title"><h2>Последние раунды</h2><Link href="/rounds" className="text-link">Вся история →</Link></div>{data.recentRounds.length ? <div className="recent-list">{data.recentRounds.map((round) => <Link href={`/rounds/${round.id}`} className="recent-row" key={round.id}><div><strong>{round.topicTitle}</strong><span>{round.stance === 'PRO' ? 'За' : 'Против'} · {round.category}</span></div><b>{round.score ? `${round.score}/50` : 'В процессе'}</b><span>→</span></Link>)}</div> : <div className="empty-action"><strong>История появится после первого раунда</strong><Link href="/topics" className="button secondary">Выбрать тему</Link></div>}</section></div></AppShell>;
 }

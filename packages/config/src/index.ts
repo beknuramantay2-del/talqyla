@@ -3,6 +3,18 @@
 
 import { z } from 'zod';
 
+/**
+ * Env booleans. `z.coerce.boolean()` is a trap: it turns the STRING "false"
+ * into `true`. This helper parses the way humans expect.
+ */
+const envBool = (def: boolean) =>
+  z
+    .union([z.boolean(), z.enum(['true', 'false', '1', '0', 'yes', 'no'])])
+    .default(def)
+    .transform((v) => (typeof v === 'boolean' ? v : v === 'true' || v === '1' || v === 'yes'));
+
+const DEFAULT_DEV_SECRET = 'change-me-access-secret-min-16-chars';
+
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
@@ -30,17 +42,37 @@ const EnvSchema = z.object({
 
   // ── Round orchestration ─────────────────────────────────────────────
   // Number of "opponent ↔ student" exchanges in the sparring cycle.
-  // 3 ≈ 15 min, ≈ $0.08/round. Keep small to bound token cost.
+  // 3 ≈ 15 min. Keep small to bound token cost.
   MAX_ROUND_EXCHANGES: z.coerce.number().int().min(1).max(6).default(3),
+
+  // ── Spend guardrails (per user, per UTC day) ────────────────────────
+  // Hard ceilings so a single account cannot drain the AI balance.
+  // Both are checked before a round is created; whichever trips first wins.
+  DAILY_ROUND_LIMIT: z.coerce.number().int().min(1).max(200).default(10),
+  DAILY_COST_LIMIT_USD: z.coerce.number().min(0.05).max(100).default(1.0),
 
   // ── LLM via OpenRouter (single key for all models) ──────────────────
   OPENROUTER_API_KEY: z.string().default(''),
   LLM_BASE_URL: z.string().url().default('https://openrouter.ai/api/v1'),
   LLM_REFERER: z.string().default('http://localhost:3000'),
   LLM_APP_TITLE: z.string().default('ДебатоТренер'),
-  LLM_MODEL_DEBATER: z.string().default('anthropic/claude-3.5-haiku'),
-  LLM_MODEL_JUDGE: z.string().default('anthropic/claude-3.5-sonnet'),
-  LLM_MODEL_SUMMARIZER: z.string().default('anthropic/claude-3.5-haiku'),
+  // Haiku 4.5 matches Sonnet-4-class quality at $1/$5 per MTok — it replaces
+  // BOTH the old 3.5-haiku debater and the (3x pricier) 3.5-sonnet judge.
+  LLM_MODEL_DEBATER: z.string().default('anthropic/claude-haiku-4.5'),
+  LLM_MODEL_JUDGE: z.string().default('anthropic/claude-haiku-4.5'),
+  LLM_MODEL_SUMMARIZER: z.string().default('anthropic/claude-haiku-4.5'),
+
+  // The summarizer costs an extra LLM call to compress ~600 tokens of history.
+  // At MAX_ROUND_EXCHANGES <= 4 that is a NET LOSS. Off unless rounds get long.
+  SUMMARIZER_ENABLED: envBool(false),
+
+  // ── Prompt-injection handling ───────────────────────────────────────
+  // 'log'   — record the signal, let the round continue (default).
+  //           Real isolation comes from delimiters + system-prompt rules.
+  // 'block' — reject the input with 400. Regex blocklists false-positive on
+  //           normal debate phrasing, so blocking hurts students more than
+  //           it helps. Only turn this on if you see live abuse.
+  INJECTION_ACTION: z.enum(['log', 'block']).default('log'),
 
   // ── STT (speech → text). stub needs no key. ─────────────────────────
   STT_PROVIDER: z.enum(['stub', 'groq', 'openai']).default('stub'),
@@ -51,6 +83,19 @@ const EnvSchema = z.object({
   TTS_PROVIDER: z.enum(['stub', 'openai', 'elevenlabs']).default('stub'),
   TTS_VOICE: z.string().default('onyx'),
   ELEVENLABS_API_KEY: z.string().default(''),
+  // TTS is ~50% of per-round COGS and the /voice/tts endpoint is user-driven.
+  // Without a ceiling it is a free text-to-speech API for the whole internet.
+  TTS_MAX_CHARS: z.coerce.number().int().min(50).max(5000).default(800),
+
+  // ── Data protection (users are minors, grades 7–11) ─────────────────
+  PARENTAL_CONSENT_REQUIRED: envBool(true),
+  CONSENT_VERSION: z.string().default('2026-07-01'),
+  // Voice transcripts of children are the most sensitive data we hold.
+  // After this window turn content is redacted; scores survive for progress.
+  TRANSCRIPT_RETENTION_DAYS: z.coerce.number().int().min(7).max(3650).default(180),
+  // Run the purge on an in-process daily timer (single-instance deploys).
+  // For multi-instance, leave off and run `pnpm retention:purge` from cron.
+  RETENTION_JOB_ENABLED: envBool(false),
 
   // ── Error monitoring (Sentry) ─────────────────────────────────────
   SENTRY_DSN: z.string().default(''),
@@ -68,13 +113,35 @@ let cached: AppEnv | null = null;
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
   if (cached) return cached;
   const parsed = EnvSchema.superRefine((val, ctx) => {
+    if (val.NODE_ENV !== 'production') return;
+
     // M3: a wildcard CORS origin with credentials: true reflects any origin,
     // which is a credential-bearing cross-origin attack surface. Block it in prod.
-    if (val.NODE_ENV === 'production' && val.CORS_ORIGIN.trim() === '*') {
+    if (val.CORS_ORIGIN.trim() === '*') {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['CORS_ORIGIN'],
         message: 'CORS_ORIGIN=* запрещён в production с credentials: true. Укажи конкретные домены через запятую.',
+      });
+    }
+
+    // Shipping the committed dev secret to prod means anyone who has read the
+    // repo can mint valid access tokens for any user. Fail the boot.
+    if (val.JWT_ACCESS_SECRET === DEFAULT_DEV_SECRET) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['JWT_ACCESS_SECRET'],
+        message: 'JWT_ACCESS_SECRET оставлен дефолтным. Сгенерируй свой: openssl rand -hex 32',
+      });
+    }
+
+    // Cookies are set with `secure: true`, so an http:// API base means the
+    // refresh cookie is silently never stored.
+    if (val.API_BASE_URL.startsWith('http://')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['API_BASE_URL'],
+        message: 'В production API_BASE_URL должен быть https:// — refresh-cookie ставится с secure: true.',
       });
     }
   }).safeParse(source);
@@ -144,6 +211,15 @@ export const argumentSchema = z.object({
   impact: impactSchema,
 });
 export type Argument = z.infer<typeof argumentSchema>;
+
+// Parental consent captured at registration. Users are minors (7–11 класс),
+// so a self-service checkbox is the legal minimum, not a nice-to-have.
+export const parentalConsentSchema = z.object({
+  parentEmail: emailSchema,
+  consentGiven: z.literal(true, {
+    errorMap: () => ({ message: 'Нужно согласие родителя или законного представителя' }),
+  }),
+});
 
 // Human-readable labels for skills (used by web + API serialisation).
 export const SKILL_LABELS_RU: Record<SkillKey, string> = {

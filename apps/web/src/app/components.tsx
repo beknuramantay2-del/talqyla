@@ -4,7 +4,8 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 
-const items = [
+type NavItem = readonly [icon: string, label: string, href: string];
+const items: readonly NavItem[] = [
   ['⌂', 'Обзор', '/'], ['◫', 'Мои раунды', '/rounds'], ['◷', 'Расписание', '/topics'], ['◇', 'Темы', '/topics'],
   ['✓', 'Достижения', '/dashboard'], ['⚙', 'Настройки', '/dashboard'],
 ];

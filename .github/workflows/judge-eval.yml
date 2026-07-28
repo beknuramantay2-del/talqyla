@@ -35,6 +35,8 @@ jobs:
           fi
       - uses: pnpm/action-setup@v4
         if: steps.guard.outputs.run == 'true'
+        with:
+          version: 9
       - uses: actions/setup-node@v4
         if: steps.guard.outputs.run == 'true'
         with:

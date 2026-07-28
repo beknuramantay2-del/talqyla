@@ -1,6 +1,11 @@
 # ДебатоТренер — production stack.
 # All secrets MUST be set via .env.production or Docker secrets.
 # Usage: docker compose -f docker-compose.prod.yml up -d
+#
+# NOTE on passwords: POSTGRES_PASSWORD and REDIS_PASSWORD are interpolated into
+# URLs below. Characters like @ : / ? # must be percent-encoded or the
+# connection string silently points somewhere else. Safest: generate with
+# `openssl rand -hex 32`, which is URL-safe by construction.
 
 services:
   postgres:
@@ -50,6 +55,41 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # ── Schema migration, one shot, before anything serves traffic ──────────
+  #
+  # Without this the stack started the API against an EMPTY database: Postgres
+  # was healthy, the API booted, and the first real request died on a missing
+  # table. The API now waits for this container to exit successfully.
+  #
+  # Uses the `builder` stage of the API image because that is the only stage
+  # that carries the Prisma CLI, the schema and the migrations folder; the slim
+  # runner stage deliberately ships neither.
+  #
+  # `migrate deploy` applies committed migrations and nothing else. Never use
+  # `migrate dev` here: it can reset the database.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: builder
+    container_name: talqyla-prod-migrate
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-talqyla}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-talqyla}
+    working_dir: /app/packages/db
+    command: ["npx", "prisma", "migrate", "deploy"]
+    networks:
+      - talqyla_prod
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   api:
     build:
       context: .
@@ -61,6 +101,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://${POSTGRES_USER:-talqyla}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-talqyla}
@@ -73,6 +115,12 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN:?err}
       RATE_LIMIT_MAX: "200"
       RATE_LIMIT_WINDOW_MS: "60000"
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?err}
+      STT_PROVIDER: ${STT_PROVIDER:-stub}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      TTS_PROVIDER: ${TTS_PROVIDER:-stub}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
       STORAGE_DIR: /app/storage

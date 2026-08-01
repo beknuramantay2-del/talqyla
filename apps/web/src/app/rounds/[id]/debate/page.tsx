@@ -1,5 +1,5 @@
 'use client';
-
+import './arena.css';
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useParams, useRouter } from 'next/navigation';

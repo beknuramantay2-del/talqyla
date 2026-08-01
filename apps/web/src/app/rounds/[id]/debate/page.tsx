@@ -31,7 +31,6 @@ export default function DebatePage() {
   const isWaiting = round?.status === 'AWAITING_JUDGE'; const isFinished = round?.status === 'COMPLETED' || round?.status === 'ABORTED';
   const studentRole = round?.stance === 'PRO' ? 'PM' : 'LO'; const opponentRole = studentRole === 'PM' ? 'LO' : 'PM';
   const latestTurn = [...turns].reverse()[0];
-  const activeSpeaker = turnMutationPendingPlaceholder;
   const focus = round?.focusSkill ? skillLabels[round.focusSkill] : 'точность ответа';
   const latestOpponent = [...turns].reverse().find((turn) => turn.role === 'OPPONENT');
   const prompt = latestOpponent?.question ?? (turns.length ? 'Подготовь следующий ответ' : 'Твоя очередь открыть раунд');

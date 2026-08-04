@@ -44,7 +44,7 @@ jobs:
       EVAL_DRILL_THRESHOLD: ${{ github.event.inputs.drillThreshold || '0.6' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Skip when no API key is configured
         id: guard

@@ -54,17 +54,18 @@ vi.mock('@talqyla/config', () => ({
 }));
 
 vi.mock('../agents/provider.js', () => ({ getAiProvider: () => ({}) }));
-vi.mock('../agents/speech-judge.js', async () => {
-  const actual = await vi.importActual<typeof import('./judge-helpers-for-test.js')>('../agents/speech-judge.js').catch(() => null);
-  return {
-    runSpeechJudge: vi.fn(),
-    normaliseScore: (raw: number | null | undefined) => Math.max(0, Math.min(10, Math.round(raw ?? 0))),
-    totalScore: (scores: { score: number }[]) => scores.reduce((sum, s) => sum + Math.round(s.score), 0),
-    weakestSkill: (scores: { skill: string; score: number }[]) =>
-      scores.length ? scores.reduce((min, s) => (s.score < min.score ? s : min)).skill : null,
-    ...(actual ? {} : {}),
-  };
-});
+
+// Судья мокается целиком: тест проверяет оркестрацию сессии, а не промпт.
+// Чистые хелперы дублируем один в один, чтобы арифметика ballot была настоящей.
+vi.mock('../agents/speech-judge.js', () => ({
+  runSpeechJudge: vi.fn(),
+  normaliseScore: (raw: number | null | undefined) => Math.max(0, Math.min(10, Math.round(raw ?? 0))),
+  totalScore: (scores: { score: number }[]) =>
+    scores.reduce((sum, s) => sum + Math.max(0, Math.min(10, Math.round(s.score))), 0),
+  weakestSkill: (scores: { skill: string; score: number }[]) =>
+    scores.length ? scores.reduce((min, s) => (s.score < min.score ? s : min)).skill : null,
+}));
+
 vi.mock('../agents/casecard.js', () => ({
   runCaseCard: vi.fn(),
   runPoi: vi.fn(),

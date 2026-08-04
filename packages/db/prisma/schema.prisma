@@ -1,14 +1,15 @@
-// ДебатоТренер — Prisma schema (MVP).
+// Talqyla — Prisma schema.
 //
-// Conventions (mirror psychoconnect):
-//   - All ids are cuid() (URL-safe, no enumeration like sequential ints).
-//   - Timestamps are UTC; updatedAt handled by Prisma @updatedAt.
-//   - camelCase TS fields map to snake_case DB columns via @map.
-//   - Every model closes with @@map("plural_snake_table").
-//   - Refresh tokens use the rotating family pattern: a stale-token reuse
-//     revokes the whole family.
-//   - Cost tracking: every turn records tokens + USD cost so we can show
-//     real per-round economics AND enforce a per-user daily budget.
+// Product model (v2, after the debater survey):
+//   A SESSION is one speech, not a chat round. The student prepares from a
+//   CaseCard, speaks once, optionally takes a single point of information,
+//   and receives a judged ballot with exactly one drill.
+//
+// Conventions:
+//   - ids are cuid(); timestamps are UTC; camelCase -> snake_case via @map.
+//   - Refresh tokens use the rotating family pattern.
+//   - EVERY paid AI call writes a UsageEvent row. That table, not the round,
+//     is the source of truth for the daily spend guard.
 
 generator client {
   provider      = "prisma-client-js"
@@ -29,16 +30,21 @@ enum UserRole {
 }
 
 enum ExperienceLevel {
-  // Derived from the onboarding quiz (grade + prior experience + logic answer).
   BEGINNER
   INTERMEDIATE
   ADVANCED
 }
 
+// Scored rubric. The first five are live; the last three are retired but
+// kept so historical rounds keep rendering (Postgres enums cannot drop
+// values while rows reference them).
 enum SkillKey {
   STRUCTURE
-  CONTENT
+  CASE_ANALYSIS
   REFUTATION
+  SPEED
+  ARGUMENTATION
+  CONTENT
   LOGIC
   DELIVERY
 }
@@ -64,13 +70,21 @@ enum Stance {
   CON
 }
 
+// Three entry points, one engine.
+//   SPEECH — 8–12 min: case card, one speech, ballot, drill.
+//   BLITZ  — 60–90 s: one prompt, one short answer, instant micro-verdict.
+//   CASE   — 3–5 min: case card study only, no speech, no judge.
+enum RoundMode {
+  SPEECH
+  BLITZ
+  CASE
+}
+
 enum RoundStatus {
   SETUP
   ARGUMENT_BUILT
   IN_PROGRESS
   AWAITING_JUDGE
-  // Claimed by a judge call in flight. Exists so two parallel POSTs to
-  // /rounds/:id/judge cannot buy two evaluations for the same round.
   JUDGING
   COMPLETED
   ABORTED
@@ -87,6 +101,7 @@ enum TurnKind {
   QUESTION
   RESPONSE
   CLOSING
+  POI
 }
 
 enum SttProvider {
@@ -101,6 +116,16 @@ enum TtsProvider {
   ELEVENLABS
 }
 
+// Every paid call is one of these.
+enum UsageKind {
+  LLM_DEBATER
+  LLM_JUDGE
+  LLM_SUMMARIZER
+  LLM_CASE
+  STT
+  TTS
+}
+
 // ─────────────────────────────── MODELS ───────────────────────────────
 
 model User {
@@ -109,17 +134,12 @@ model User {
   passwordHash String
   name         String
   role         UserRole @default(USER)
-  // Refresh-token rotation: the jti of the currently valid refresh token.
   refreshJti           String?   @map("refresh_jti")
   lastLoginAt          DateTime? @map("last_login_at")
   passwordResetToken   String?   @map("password_reset_token")
   passwordResetExpires DateTime? @map("password_reset_expires")
 
-  // ── Parental consent ────────────────────────────────────────────
-  // Every user is a school student (grades 7–11), i.e. a minor. We record
-  // their voice and send it to third-party AI processors, so consent from a
-  // parent/guardian is captured at registration and versioned: if the policy
-  // changes we can tell who agreed to which text.
+  // Users are minors: consent is captured at registration and versioned.
   parentEmail            String?   @map("parent_email")
   parentalConsentAt      DateTime? @map("parental_consent_at")
   parentalConsentVersion String?   @map("parental_consent_version")
@@ -131,6 +151,7 @@ model User {
   rounds         DebateRound[]
   refreshTokens  RefreshToken[]
   onboarding     OnboardingQuiz?
+  usageEvents    UsageEvent[]
 
   @@map("users")
 }
@@ -139,21 +160,23 @@ model StudentProfile {
   id              String           @id @default(cuid())
   userId          String           @unique @map("user_id")
   user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  grade           Int              // 7–11
+  grade           Int
   experienceLevel ExperienceLevel  @default(BEGINNER) @map("experience_level")
-  // The skill the dashboard recommends focusing on next (weakest recent skill).
-  // Read by the Debater prompt (agents/debater.ts FOCUS_BRIEF).
   focusSkill      SkillKey?        @map("focus_skill")
-  // Free-text goal from onboarding: "Уверенность в речи" / "Аргументы" / ...
   goal            String?
   roundsPlayed    Int              @default(0) @map("rounds_played")
+  // Weekly league standing is computed from IMPROVEMENT on the focus skill,
+  // not from an absolute score: a beginner must be able to win a week.
+  ratingPoints    Int              @default(0) @map("rating_points")
+  streakDays      Int              @default(0) @map("streak_days")
+  lastSessionAt   DateTime?        @map("last_session_at")
   createdAt       DateTime         @default(now()) @map("created_at")
   updatedAt       DateTime         @updatedAt @map("updated_at")
 
+  @@index([ratingPoints])
   @@map("student_profiles")
 }
 
-// 15 hardcoded debate topics. Seeded idempotently by slug.
 model Topic {
   id          String         @id @default(cuid())
   slug        String         @unique
@@ -161,14 +184,41 @@ model Topic {
   description String
   category    TopicCategory
   difficulty  TopicDifficulty @default(EASY)
-  // Optional one-line hint nudging the student toward a Claim they might use.
   proHint     String?        @map("pro_hint")
   conHint     String?        @map("con_hint")
   createdAt   DateTime       @default(now()) @map("created_at")
 
-  rounds DebateRound[]
+  rounds   DebateRound[]
+  caseCard CaseCard?
 
   @@map("topics")
+}
+
+// Preparation material. 50% of surveyed debaters named "not enough material
+// to prepare" as a top-2 blocker, and the product had none at all.
+//
+// Generated ONCE per topic by an LLM, reviewed by a human, then served from
+// the DB forever. This is why case cards cost effectively nothing per user.
+model CaseCard {
+  id           String   @id @default(cuid())
+  topicId      String   @unique @map("topic_id")
+  topic        Topic    @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  // string[] — who is affected and how.
+  stakeholders Json
+  // string[] — the 2–3 clashes this motion actually turns on.
+  clashes      Json
+  // string[] — typical lines for each side, as raw material, not a script.
+  proArguments Json     @map("pro_arguments")
+  conArguments Json     @map("con_arguments")
+  // string[] — common traps and weak moves on this motion.
+  traps        Json
+  // Set once a coach has signed off. Unreviewed cards render with a warning.
+  reviewedAt   DateTime? @map("reviewed_at")
+  reviewedBy   String?   @map("reviewed_by")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@map("case_cards")
 }
 
 model DebateRound {
@@ -177,21 +227,20 @@ model DebateRound {
   user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   topicId       String      @map("topic_id")
   topic         Topic       @relation(fields: [topicId], references: [id])
+  mode          RoundMode   @default(SPEECH)
   stance        Stance
   status        RoundStatus @default(SETUP)
-  // The argument the student built (Claim / Warrant / Impact) — JSON.
+  // Speaker role being trained: PM, LO, DPM, DLO, MG, MO, GW, OW.
+  speakerRole   String?     @map("speaker_role")
   argument      Json?
-  // Reserved for a denormalised transcript snapshot. The source of truth for
-  // the Judge is the ordered DebateTurn rows.
   transcript    Json        @default("[]") @map("transcript")
-  // How many opponent↔student exchanges were completed.
   exchangesDone Int         @default(0) @map("exchanges_done")
-  // Accumulated USD cost across all turns. Read by the daily spend guard in
-  // round.service.assertDailyBudget — this is a live control, not analytics.
+  // Wall-clock length of the recorded speech. Feeds the SPEED score and the
+  // "did you use your time" note in the ballot.
+  speechSeconds Int?        @map("speech_seconds")
+  // Denormalised for the round list. usage_events remains authoritative.
   costEstimateUsd Decimal?  @db.Decimal(8, 4) @map("cost_estimate_usd")
-  // Optional skill focus set when starting the round (drives Debater prompt).
   focusSkill    SkillKey?   @map("focus_skill")
-  // Set once the retention job has redacted this round's free text.
   purgedAt      DateTime?   @map("purged_at")
   startedAt     DateTime    @default(now()) @map("started_at")
   completedAt   DateTime?   @map("completed_at")
@@ -201,54 +250,47 @@ model DebateRound {
   turns       DebateTurn[]
   skillScores SkillScore[]
   feedback    RoundFeedback?
+  usageEvents UsageEvent[]
 
   @@index([userId, status])
   @@index([userId, completedAt])
-  // Daily spend guard: count + sum of today's rounds for one user.
   @@index([userId, createdAt])
-  // Retention sweep scans by age.
+  @@index([userId, mode, createdAt])
   @@index([createdAt])
   @@map("debate_rounds")
 }
 
-// One row per spoken/written turn in a round. Ordered by `idx`.
-// Student turns come from STT; opponent turns come from the Debater + TTS.
 model DebateTurn {
   id           String    @id @default(cuid())
   roundId      String    @map("round_id")
   round        DebateRound @relation(fields: [roundId], references: [id], onDelete: Cascade)
-  idx          Int // 0-based position in the round
+  idx          Int
   role         TurnRole
   kind         TurnKind
   contentText  String    @map("content_text")
-  // Optional question the opponent asked (extracted from JSON-mode Debater response).
   question     String?
-  // Local URL to the synthesised opponent audio (or student recording).
   audioUrl     String?   @map("audio_url")
-  // For opponent turns: refs into the student's argument transcript was cited.
   citationRefs Json?     @default("[]") @map("citation_refs")
   tokensIn     Int       @default(0) @map("tokens_in")
   tokensOut    Int       @default(0) @map("tokens_out")
   costUsd      Decimal   @default(0) @db.Decimal(8, 6) @map("cost_usd")
   sttProvider  SttProvider? @map("stt_provider")
   ttsProvider  TtsProvider? @map("tts_provider")
-  // Set once the retention job has redacted this turn's content.
   purgedAt     DateTime? @map("purged_at")
   createdAt    DateTime  @default(now()) @map("created_at")
 
+  @@unique([roundId, idx])
   @@index([roundId, idx])
   @@index([createdAt])
   @@map("debate_turns")
 }
 
-// Judge output: 5 rows per completed round, one per skill.
-// Numeric scores are deliberately NOT purged — they are the progress history.
 model SkillScore {
   id        String   @id @default(cuid())
   roundId   String   @map("round_id")
   round     DebateRound @relation(fields: [roundId], references: [id], onDelete: Cascade)
   skill     SkillKey
-  score     Int // 0–10
+  score     Int
   comment   String?
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -257,47 +299,71 @@ model SkillScore {
   @@map("skill_scores")
 }
 
-// The Judge's prose feedback, separate from the structured SkillScore rows.
-// strengths/weaknesses quote the student verbatim, so they expire with the
-// transcript; totalScore survives.
 model RoundFeedback {
   id           String   @id @default(cuid())
   roundId      String   @unique @map("round_id")
   round        DebateRound @relation(fields: [roundId], references: [id], onDelete: Cascade)
   totalScore   Int // 0–50
-  strengths    Json // string[]
-  weaknesses   Json // string[]
-  advice       Json // string[]
-  summaryText  String  @map("summary_text") // human-readable overall verdict
+  strengths    Json
+  weaknesses   Json
+  advice       Json
+  summaryText  String  @map("summary_text")
+  // The one thing to do next. The survey's loudest complaint was feedback
+  // that arrives "sometimes" and leads nowhere, so a ballot without a drill
+  // is considered incomplete.
+  drillSkill   SkillKey? @map("drill_skill")
+  drillPrompt  String?   @map("drill_prompt")
   createdAt    DateTime @default(now()) @map("created_at")
 
   @@index([createdAt])
   @@map("round_feedback")
 }
 
+// Every paid AI call. Written before the budget is re-read, so the daily cap
+// sees STT and TTS too. Previously both bypassed every spend control.
+model UsageEvent {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roundId   String?  @map("round_id")
+  round     DebateRound? @relation(fields: [roundId], references: [id], onDelete: SetNull)
+  kind      UsageKind
+  provider  String
+  model     String
+  tokensIn  Int      @default(0) @map("tokens_in")
+  tokensOut Int      @default(0) @map("tokens_out")
+  /// Tokens for LLM, seconds for STT, characters for TTS.
+  units     Int      @default(0)
+  costUsd   Decimal  @default(0) @db.Decimal(10, 6) @map("cost_usd")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([kind, createdAt])
+  @@index([roundId])
+  @@map("usage_events")
+}
+
 model OnboardingQuiz {
   id             String           @id @default(cuid())
   userId         String           @unique @map("user_id")
   user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  grade          Int // 7–11
-  priorExperience String          @map("prior_experience") // never | few | regular
+  grade          Int
+  priorExperience String          @map("prior_experience")
   goal           String
-  logicAnswer    String           @map("logic_answer") // argument | opinion
+  logicAnswer    String           @map("logic_answer")
   derivedLevel   ExperienceLevel  @map("derived_level")
   createdAt      DateTime         @default(now()) @map("created_at")
 
   @@map("onboarding_quizzes")
 }
 
-// Rotating refresh tokens: each issued refresh token is a row, allowing
-// detection of reuse (the whole family is revoked if a stale token is used).
 model RefreshToken {
   id         String   @id @default(cuid())
   userId     String   @map("user_id")
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  jti        String   @unique // JWT id
-  family     String   // rotation chain id — revoke family on reuse
-  hashed     String   // store only a hash of the token
+  jti        String   @unique
+  family     String
+  hashed     String
   expiresAt  DateTime @map("expires_at")
   revokedAt  DateTime? @map("revoked_at")
   replacedBy String?  @map("replaced_by")

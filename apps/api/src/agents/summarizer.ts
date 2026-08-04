@@ -1,15 +1,14 @@
-// Summarizer agent — compresses early dialogue history to bound context cost.
+// History window — replaces the old summarizer agent.
 //
-// ECONOMICS WARNING: this agent costs an extra LLM call. At
-// MAX_ROUND_EXCHANGES <= 4 the history it compresses (~600 tokens) is cheaper
-// than the call that compresses it, so it is a NET LOSS and is disabled by
-// default via SUMMARIZER_ENABLED. Turn it on only for long rounds.
+// The summarizer spent a whole LLM call to compress ~600 tokens of history.
+// At three exchanges that was a net loss: the call cost more than the tokens
+// it saved. Now the same job is done with a sliding window and truncation,
+// for zero dollars and zero latency.
+//
+// The exported signature is unchanged so callers do not need to care.
 
 import { env } from '@talqyla/config';
 import type { AiProvider } from './provider.js';
-
-const SUMMARIZE_THRESHOLD_TURNS = 4;
-const KEEP_RECENT_TURNS = 2;
 
 export interface HistoryTurn {
   role: string;
@@ -22,29 +21,30 @@ export interface CompressResult {
   used: boolean;
 }
 
-export async function compressHistory(ai: AiProvider, history: HistoryTurn[]): Promise<CompressResult> {
-  if (!env.SUMMARIZER_ENABLED) return { history, costUsd: 0, used: false };
-  if (history.length <= SUMMARIZE_THRESHOLD_TURNS) return { history, costUsd: 0, used: false };
+/** Truncate one turn on a word boundary so the model never sees a cut word. */
+function clip(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
 
-  const toSummarize = history.slice(0, history.length - KEEP_RECENT_TURNS);
-  const recent = history.slice(history.length - KEEP_RECENT_TURNS);
-
-  const dialogue = toSummarize
-    .map((m, i) => `${i + 1}. ${m.role === 'student' ? 'Ученик' : 'Оппонент'}: ${m.text}`)
-    .join('\n');
-
-  const result = await ai.llm.complete({
-    model: env.LLM_MODEL_SUMMARIZER,
-    system:
-      'Ты сжимаешь историю дебатов. Сохрани: ключевые аргументы ученика (с короткими цитатами), его уступки, открытые вопросы оппонента, и кто в каком пункте победил. Урони всё лишнее. 3–5 предложений максимум. На русском.',
-    messages: [{ role: 'user', content: dialogue }],
-    maxTokens: 250,
-    temperature: 0.1,
-  });
+/**
+ * Keep the last N turns, each clipped. Deterministic, free, and good enough:
+ * a debate reply only ever needs the immediate context to answer well.
+ *
+ * `_ai` is accepted so the call sites read the same as before.
+ */
+export async function compressHistory(_ai: AiProvider, history: HistoryTurn[]): Promise<CompressResult> {
+  const windowed = history.slice(-env.HISTORY_WINDOW_TURNS);
+  const clipped = windowed.map((turn) => ({
+    role: turn.role,
+    text: clip(turn.text, env.HISTORY_TURN_MAX_CHARS),
+  }));
 
   return {
-    history: [{ role: 'opponent', text: `[Сводка предыдущих обменов]\n${result.text}` }, ...recent],
-    costUsd: result.costUsd,
-    used: true,
+    history: clipped,
+    costUsd: 0,
+    used: clipped.length !== history.length,
   };
 }

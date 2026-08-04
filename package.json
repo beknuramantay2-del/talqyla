@@ -1,8 +1,8 @@
 {
   "name": "talqyla",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "ДебатоТренер — AI-тренер по дебатам для школьников 7–11 классов. Структурированные раунды с голосовым спарринг-оппонентом и агентом-судьёй.",
+  "description": "Talqyla — тренажёр между турнирами для дебатёров: одна речь, разбор судьи, конкретный дрилл и рейтинг.",
   "packageManager": "pnpm@9.0.0",
   "engines": {
     "node": ">=20.0.0"
@@ -26,6 +26,7 @@
     "infra:down": "docker compose down",
     "infra:logs": "docker compose logs -f",
     "retention:purge": "pnpm --filter @talqyla/api run retention:purge",
+    "eval:speech:live": "pnpm --filter @talqyla/api run eval:speech:live",
     "eval:judge:live": "pnpm --filter @talqyla/api run eval:judge:live",
     "postinstall": "pnpm --filter @talqyla/db prisma:generate"
   },

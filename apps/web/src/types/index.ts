@@ -137,3 +137,49 @@ export interface LeagueRow {
   sessionsPlayed: number;
   isMe: boolean;
 }
+
+// ── Legacy v1 ─────────────────────────────────────────────────────────
+// Раунды из трёх обменов. Экраны и типы живут, пока не перенесена история;
+// новые сценарии сюда не добавляем.
+export type RoundStatus = 'SETUP' | 'ARGUMENT_BUILT' | 'IN_PROGRESS' | 'AWAITING_JUDGE' | 'JUDGING' | 'COMPLETED' | 'ABORTED';
+export type TurnRole = 'STUDENT' | 'OPPONENT';
+export type TurnKind = 'OPENING' | 'REBUTTAL' | 'QUESTION' | 'RESPONSE' | 'CLOSING';
+
+export interface DebateTurn {
+  id: string;
+  idx: number;
+  role: TurnRole;
+  kind: TurnKind;
+  contentText: string;
+  question: string | null;
+  audioUrl: string | null;
+  citationRefs: string[];
+}
+
+export interface SkillScore { id: string; skill: AnySkillKey; score: number; comment: string | null }
+
+export interface RoundFeedback {
+  id: string;
+  totalScore: number;
+  strengths: string[];
+  weaknesses: string[];
+  advice: string[];
+  summaryText: string;
+}
+
+export interface DebateRound {
+  id: string;
+  topicId: string;
+  topic: Topic;
+  stance: Stance;
+  status: RoundStatus;
+  argument: { claim: string; warrant: string; impact: string } | null;
+  exchangesDone: number;
+  focusSkill: AnySkillKey | null;
+  costEstimateUsd: number | null;
+  startedAt: string;
+  completedAt: string | null;
+  turns: DebateTurn[];
+  skillScores: SkillScore[];
+  feedback: RoundFeedback | null;
+}

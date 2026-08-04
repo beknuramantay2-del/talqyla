@@ -1,5 +1,5 @@
 // Browser API client: access token is memory-only, refresh token is an httpOnly cookie.
-import type { Ballot, CaseCard, DashboardStats, LeagueRow, PracticeSession, Topic } from '@/types';
+import type { Ballot, CaseCard, DashboardStats, DebateRound, LeagueRow, PracticeSession, RoundFeedback, Topic } from '@/types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api/v1';
 let accessToken: string | null = null;
@@ -92,4 +92,18 @@ export const api = {
     }
     return response.json() as Promise<{ text: string; durationSec: number; provider: string }>;
   },
+
+  // ── Legacy v1: раунды из трёх обменов ─────────────────────────────
+  // Экраны истории ещё живут на этих методах. Новые сценарии сюда не идут.
+  createRound: (data: { topicId: string; stance: string; focusSkill?: string }) =>
+    request<DebateRound>('/rounds', { method: 'POST', body: JSON.stringify(data) }),
+  getRounds: (query = '') => request<{ items: DebateRound[]; total: number }>(`/rounds${query}`),
+  getRound: (id: string) => request<DebateRound>(`/rounds/${enc(id)}`),
+  submitArgument: (id: string, data: { claim: string; warrant: string; impact: string }) =>
+    request<DebateRound>(`/rounds/${enc(id)}/argument`, { method: 'POST', body: JSON.stringify(data) }),
+  submitTurn: (id: string, data: { text: string; kind?: string }) =>
+    request<{ studentTurn: { idx: number; role: string; kind: string; text: string }; opponentTurn: { idx: number; role: string; kind: string; text: string; question: string | null }; status: string; exchangesDone: number }>(`/rounds/${enc(id)}/turn`, { method: 'POST', body: JSON.stringify(data) }),
+  judgeRound: (id: string) =>
+    request<RoundFeedback & { scores: { skill: string; score: number; comment?: string }[] }>(`/rounds/${enc(id)}/judge`, { method: 'POST' }),
+  abortRound: (id: string) => request<{ ok: boolean }>(`/rounds/${enc(id)}/abort`, { method: 'PATCH' }),
 };

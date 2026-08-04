@@ -1,21 +1,21 @@
 // Учёт трат на AI: одна точка входа для «сколько уже потрачено» и «можно ли тратить».
 //
-// Что здесь чинится. Суточный бюджет считался по DebateRound.costEstimateUsd, то
-// есть учитывал ТОЛЬКО LLM. Вызовы /voice/stt и /voice/tts не попадали в кап
-// вообще: у них был лишь rate limit 20 запросов в минуту. При TTS_PROVIDER=openai
-// это ~$14 в час с одного аккаунта, просто дёрганьем эндпоинта.
+// Что здесь чинится. Суточный бюджет считался по DebateRound.costEstimateUsd,
+// то есть учитывал ТОЛЬКО LLM. Вызовы /voice/stt и /voice/tts не попадали в кап
+// вообще: у них был лишь rate limit. При TTS_PROVIDER=openai это ~$14 в час с
+// одного аккаунта, просто дёрганьем эндпоинта.
 //
 // Правила модуля:
 //   1. Каждый платный вызов пишется в usage_events. Без исключений.
 //   2. Лимит проверяется ДО вызова по проектной стоимости, а не после по факту.
-//   3. Падение учёта не должно ронять раунд ученика, но обязано быть в логах.
+//   3. Падение учёта не должно ронять сессию ученика, но обязано быть в логах.
 
 import { prisma } from '@talqyla/db';
 import { env } from '@talqyla/config';
 import { rateLimited } from './errors.js';
-import { EST_ROUND_USD } from './pricing.js';
+import { EST_ROUND_USD, EST_SESSION_USD } from './pricing.js';
 
-export type SpendKind = 'LLM_DEBATER' | 'LLM_JUDGE' | 'LLM_SUMMARIZER' | 'STT' | 'TTS';
+export type SpendKind = 'LLM_DEBATER' | 'LLM_JUDGE' | 'LLM_SUMMARIZER' | 'LLM_CASE' | 'STT' | 'TTS';
 
 /** Минимальный логгер — роуты передают req.log. */
 export interface SpendLogger {
@@ -30,46 +30,44 @@ export function startOfUtcDay(): Date {
 }
 
 export interface DailySpend {
-  /** Суммарные деньги за UTC-сутки: LLM + STT + TTS. */
   usd: number;
-  /** Символы, отправленные в озвучку. Отдельный кап: TTS дороже всего остального. */
   ttsChars: number;
-  /** Секунды аудио, отправленные в распознавание. */
   sttSeconds: number;
-  /** Созданные раунды. */
+  sessions: number;
   rounds: number;
 }
 
 export async function getDailySpend(userId: string): Promise<DailySpend> {
   const since = startOfUtcDay();
 
-  const [total, tts, stt, rounds] = await Promise.all([
-    prisma.usageEvent.aggregate({
-      where: { userId, createdAt: { gte: since } },
-      _sum: { costUsd: true },
-    }),
-    prisma.usageEvent.aggregate({
-      where: { userId, kind: 'TTS', createdAt: { gte: since } },
+  const [total, byKind, sessions, rounds] = await Promise.all([
+    prisma.usageEvent.aggregate({ where: { userId, createdAt: { gte: since } }, _sum: { costUsd: true } }),
+    // Один groupBy вместо двух отдельных агрегатов: аудио-капы читаются
+    // на каждом платном вызове, лишние round-trip тут дороже кода.
+    prisma.usageEvent.groupBy({
+      by: ['kind'],
+      where: { userId, createdAt: { gte: since }, kind: { in: ['STT', 'TTS'] } },
       _sum: { units: true },
     }),
-    prisma.usageEvent.aggregate({
-      where: { userId, kind: 'STT', createdAt: { gte: since } },
-      _sum: { units: true },
-    }),
+    prisma.practiceSession.count({ where: { userId, createdAt: { gte: since } } }),
     prisma.debateRound.count({ where: { userId, createdAt: { gte: since } } }),
   ]);
 
+  const unitsFor = (kind: 'STT' | 'TTS') =>
+    Number(byKind.find((row) => row.kind === kind)?._sum.units ?? 0);
+
   return {
     usd: Number(total._sum.costUsd ?? 0),
-    ttsChars: Number(tts._sum.units ?? 0),
-    sttSeconds: Number(stt._sum.units ?? 0),
+    ttsChars: unitsFor('TTS'),
+    sttSeconds: unitsFor('STT'),
+    sessions,
     rounds,
   };
 }
 
 /**
  * Записать факт траты. Никогда не бросает наружу: если строчка учёта не легла,
- * ученик не должен потерять уже оплаченный ход. Но в логи это попадёт.
+ * ученик не должен потерять уже оплаченный ответ судьи. Но в логи это попадёт.
  */
 export async function recordUsage(
   input: {
@@ -108,10 +106,7 @@ export async function recordUsage(
   }
 }
 
-/**
- * Общий страж бюджета: сегодняшние траты + проектная стоимость вызова не должны
- * пробить дневной потолок.
- */
+/** Общий страж: сегодняшние траты + проектная стоимость вызова против потолка. */
 export async function assertBudget(
   userId: string,
   projectedUsd: number,
@@ -131,29 +126,39 @@ export async function assertBudget(
   return spend;
 }
 
-/** Перед созданием раунда: и штук в сутки, и денег в сутки. */
+/** Перед созданием сессии: и штук в сутки, и денег в сутки. */
+export async function assertSessionBudget(userId: string, log?: SpendLogger): Promise<void> {
+  const spend = await assertBudget(
+    userId,
+    EST_SESSION_USD,
+    { event: 'daily_cost_cap_hit', message: 'Дневной лимит тренировок исчерпан. Возвращайся завтра.' },
+    log,
+  );
+
+  if (spend.sessions >= env.DAILY_SESSION_LIMIT) {
+    log?.warn({ event: 'daily_session_cap_hit', userId, sessions: spend.sessions }, 'Дневной лимит сессий исчерпан');
+    throw rateLimited(`Дневной лимит тренировок исчерпан (${env.DAILY_SESSION_LIMIT} в сутки). Возвращайся завтра.`);
+  }
+}
+
+/** Legacy: раунды v1. */
 export async function assertRoundBudget(userId: string, log?: SpendLogger): Promise<void> {
   const spend = await assertBudget(
     userId,
     EST_ROUND_USD,
-    {
-      event: 'daily_cost_cap_hit',
-      message: 'Дневной лимит занятий исчерпан. Возвращайся завтра.',
-    },
+    { event: 'daily_cost_cap_hit', message: 'Дневной лимит занятий исчерпан. Возвращайся завтра.' },
     log,
   );
 
   if (spend.rounds >= env.DAILY_ROUND_LIMIT) {
     log?.warn({ event: 'daily_round_cap_hit', userId, rounds: spend.rounds }, 'Дневной лимит раундов исчерпан');
-    throw rateLimited(
-      `Дневной лимит раундов исчерпан (${env.DAILY_ROUND_LIMIT} в сутки). Возвращайся завтра, дебаты никуда не денутся.`,
-    );
+    throw rateLimited(`Дневной лимит раундов исчерпан (${env.DAILY_ROUND_LIMIT} в сутки). Возвращайся завтра.`);
   }
 }
 
 /**
- * Перед распознаванием речи. Длительность точно известна только провайдеру,
- * поэтому здесь считаем по верхней оценке из размера файла.
+ * Перед распознаванием речи. Точную длительность знает только провайдер,
+ * поэтому здесь верхняя оценка из размера файла.
  */
 export async function assertSttBudget(
   userId: string,
@@ -178,9 +183,9 @@ export async function assertSttBudget(
 }
 
 /**
- * Перед озвучкой. Символы известны заранее, поэтому проверка точная, а не оценочная.
- * Это единственное место, где мы можем не дать одному аккаунту превратить
- * /voice/tts в бесплатный TTS-API за наш счёт.
+ * Перед озвучкой. Символы известны заранее, поэтому проверка точная.
+ * Это единственное место, где мы не даём превратить /voice/tts в бесплатный
+ * TTS-API за наш счёт.
  */
 export async function assertTtsBudget(
   userId: string,
@@ -191,15 +196,12 @@ export async function assertTtsBudget(
   const spend = await assertBudget(
     userId,
     projectedUsd,
-    {
-      event: 'daily_cost_cap_hit_tts',
-      message: 'Дневной лимит озвучки исчерпан. Реплики оппонента останутся текстом.',
-    },
+    { event: 'daily_cost_cap_hit_tts', message: 'Дневной лимит озвучки исчерпан. Реплики останутся текстом.' },
     log,
   );
 
   if (spend.ttsChars + chars > env.DAILY_TTS_CHARS_LIMIT) {
     log?.warn({ event: 'daily_tts_cap_hit', userId, chars: spend.ttsChars }, 'Дневной лимит TTS исчерпан');
-    throw rateLimited('Дневной лимит озвучки исчерпан. Реплики оппонента останутся текстом.');
+    throw rateLimited('Дневной лимит озвучки исчерпан. Реплики останутся текстом.');
   }
 }

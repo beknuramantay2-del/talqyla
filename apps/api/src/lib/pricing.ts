@@ -1,8 +1,7 @@
 // Единая таблица цен на AI. Проверено 2026-08.
 //
-// Раньше цены жили в трёх местах: таблица LLM внутри provider.ts, комментарии в
-// .env.example и НИГДЕ для аудио. Аудио не тарифицировалось вообще, поэтому STT и
-// TTS не попадали ни в один бюджет. Теперь все цены здесь, и только здесь.
+// Раньше цены жили в трёх местах: таблица внутри provider.ts, комментарии в
+// .env.example и НИГДЕ для аудио. Теперь все цены здесь, и только здесь.
 
 /**
  * USD за токен. Фолбэк: используется, только если OpenRouter не вернул реальную
@@ -14,6 +13,7 @@ export const LLM_PRICING: Record<string, { input: number; output: number }> = {
   'anthropic/claude-sonnet-4.5': { input: 3.0e-6, output: 15.0e-6 },
   'anthropic/claude-3.5-haiku': { input: 0.8e-6, output: 4.0e-6 },
   'anthropic/claude-3.5-sonnet': { input: 3.0e-6, output: 15.0e-6 },
+  'google/gemini-2.5-flash-lite': { input: 0.1e-6, output: 0.4e-6 },
 };
 
 export const DEFAULT_LLM_MODEL = 'anthropic/claude-haiku-4.5';
@@ -23,11 +23,7 @@ export function llmCostUsd(model: string, tokensIn: number, tokensOut: number): 
   return tokensIn * price.input + tokensOut * price.output;
 }
 
-/**
- * USD за секунду аудио, ключ — `провайдер:модель`.
- * Выходной токен LLM стоит в 5 раз дороже входного, а секунда аудио — копейки,
- * поэтому голосовой ВВОД дешёвый. Дорогая всегда озвучка, см. ниже.
- */
+/** USD за секунду аудио, ключ — `провайдер:модель`. */
 export const STT_PRICE_PER_SECOND: Record<string, number> = {
   // $0.04/час. Дефолт: на русском WER практически как у large-v3,
   // а платим в 2.8 раза меньше.
@@ -39,13 +35,11 @@ export const STT_PRICE_PER_SECOND: Record<string, number> = {
 };
 
 /**
- * USD за символ. Это самая дорогая часть раунда: одна реплика оппонента в 420
- * символов стоит дороже, чем весь ход модели, который её придумал.
+ * USD за символ. Самая дорогая часть продукта на единицу пользы: одна озвученная
+ * реплика стоит дороже, чем вся работа модели, которая её придумала.
  */
 export const TTS_PRICE_PER_CHAR: Record<string, number> = {
-  // $15 за 1M символов.
   'openai:tts-1': 15 / 1_000_000,
-  // Ориентир $120 за 1M символов. Хук заложен, провайдер не подключён.
   'elevenlabs:default': 120 / 1_000_000,
   'stub:stub': 0,
 };
@@ -59,9 +53,14 @@ export function ttsCostUsd(provider: string, model: string, chars: number): numb
 }
 
 /**
- * Ожидаемая стоимость одного текстового раунда: 3 хода оппонента + судья.
- * Нужна, чтобы отказать ДО первого платного вызова, а не после четвёртого.
+ * Проектная стоимость сессии v2: один вызов судьи (~2.5k in / ~700 out) плюс
+ * опциональный POI. Нужна, чтобы отказать ДО первого платного вызова.
+ *
+ * Для сравнения: раунд v1 стоил ~$0.015, потому что покупал три хода оппонента.
  */
+export const EST_SESSION_USD = 0.008;
+
+/** Legacy: раунд v1 с тремя обменами. Остаётся, пока живы старые раунды. */
 export const EST_ROUND_USD = 0.02;
 
 /**

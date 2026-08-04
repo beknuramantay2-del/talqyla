@@ -1,15 +1,13 @@
 // Talqyla — Prisma schema.
 //
-// Product model (v2, after the debater survey):
-//   A SESSION is one speech, not a chat round. The student prepares from a
-//   CaseCard, speaks once, optionally takes a single point of information,
-//   and receives a judged ballot with exactly one drill.
+// v2 (2026-08): продукт переехал с «раунд из трёх обменов против AI-оппонента»
+// на «одна речь + разбор + дрилл». Опрос дебатёров показал, что нехватка
+// оппонентов волнует 6% респондентов, а нехватка практики, материала и
+// регулярного фидбека — 81%, 50% и 56%. Модель данных следует за этим.
 //
-// Conventions:
-//   - ids are cuid(); timestamps are UTC; camelCase -> snake_case via @map.
-//   - Refresh tokens use the rotating family pattern.
-//   - EVERY paid AI call writes a UsageEvent row. That table, not the round,
-//     is the source of truth for the daily spend guard.
+// Старые DebateRound/DebateTurn НЕ удалены: на них есть история и миграции.
+// Новый цикл живёт в PracticeSession. Удалять раунды можно только после
+// переноса истории.
 
 generator client {
   provider      = "prisma-client-js"
@@ -35,18 +33,17 @@ enum ExperienceLevel {
   ADVANCED
 }
 
-// Scored rubric. The first five are live; the last three are retired but
-// kept so historical rounds keep rendering (Postgres enums cannot drop
-// values while rows reference them).
+// Рубрика v2. STRUCTURE / CASE_ANALYSIS / QUICK_THINKING — топ-3 запроса из
+// опроса. CONTENT = аргументация. DELIVERY больше не оценивается судьёй
+// (её не назвал ни один респондент), но значение остаётся в enum ради истории.
 enum SkillKey {
   STRUCTURE
-  CASE_ANALYSIS
-  REFUTATION
-  SPEED
-  ARGUMENTATION
   CONTENT
+  REFUTATION
   LOGIC
   DELIVERY
+  CASE_ANALYSIS
+  QUICK_THINKING
 }
 
 enum TopicCategory {
@@ -70,14 +67,34 @@ enum Stance {
   CON
 }
 
-// Three entry points, one engine.
-//   SPEECH — 8–12 min: case card, one speech, ballot, drill.
-//   BLITZ  — 60–90 s: one prompt, one short answer, instant micro-verdict.
-//   CASE   — 3–5 min: case card study only, no speech, no judge.
-enum RoundMode {
+// Три режима одного движка.
+//   SPEECH — 8–12 мин: роль, кейс-карта, речь, ballot, дрилл.
+//   BLITZ  — 60–90 сек: один короткий вызов, тренирует скорость мышления.
+//   CASE   — 3–5 мин: только разбор темы, без речи.
+enum SessionMode {
   SPEECH
   BLITZ
   CASE
+}
+
+enum SessionStatus {
+  PREP
+  SPEAKING
+  SCORING
+  COMPLETED
+  ABORTED
+}
+
+// Роль спикера. Определяет, что судья считает выполнением роли.
+enum SpeakerRole {
+  PM
+  LO
+  DPM
+  DLO
+  MG
+  MO
+  GW
+  OW
 }
 
 enum RoundStatus {
@@ -101,7 +118,6 @@ enum TurnKind {
   QUESTION
   RESPONSE
   CLOSING
-  POI
 }
 
 enum SttProvider {
@@ -116,7 +132,7 @@ enum TtsProvider {
   ELEVENLABS
 }
 
-// Every paid call is one of these.
+// Вид платного вызова. Нужен, чтобы понимать, куда реально уходят деньги.
 enum UsageKind {
   LLM_DEBATER
   LLM_JUDGE
@@ -139,7 +155,6 @@ model User {
   passwordResetToken   String?   @map("password_reset_token")
   passwordResetExpires DateTime? @map("password_reset_expires")
 
-  // Users are minors: consent is captured at registration and versioned.
   parentEmail            String?   @map("parent_email")
   parentalConsentAt      DateTime? @map("parental_consent_at")
   parentalConsentVersion String?   @map("parental_consent_version")
@@ -149,9 +164,10 @@ model User {
 
   studentProfile StudentProfile?
   rounds         DebateRound[]
+  sessions       PracticeSession[]
+  usageEvents    UsageEvent[]
   refreshTokens  RefreshToken[]
   onboarding     OnboardingQuiz?
-  usageEvents    UsageEvent[]
 
   @@map("users")
 }
@@ -165,8 +181,9 @@ model StudentProfile {
   focusSkill      SkillKey?        @map("focus_skill")
   goal            String?
   roundsPlayed    Int              @default(0) @map("rounds_played")
-  // Weekly league standing is computed from IMPROVEMENT on the focus skill,
-  // not from an absolute score: a beginner must be able to win a week.
+  // v2: сессий больше, чем раундов, и рейтинг считается по ним.
+  sessionsPlayed  Int              @default(0) @map("sessions_played")
+  // Очки недельной лиги. Растут за прирост слабого навыка, а не за объём.
   ratingPoints    Int              @default(0) @map("rating_points")
   streakDays      Int              @default(0) @map("streak_days")
   lastSessionAt   DateTime?        @map("last_session_at")
@@ -189,37 +206,119 @@ model Topic {
   createdAt   DateTime       @default(now()) @map("created_at")
 
   rounds   DebateRound[]
+  sessions PracticeSession[]
   caseCard CaseCard?
 
   @@map("topics")
 }
 
-// Preparation material. 50% of surveyed debaters named "not enough material
-// to prepare" as a top-2 blocker, and the product had none at all.
-//
-// Generated ONCE per topic by an LLM, reviewed by a human, then served from
-// the DB forever. This is why case cards cost effectively nothing per user.
+// Кейс-карта: материал для подготовки. 50% респондентов назвали его нехватку
+// вторым ограничителем роста. Генерируется один раз на тему и кешируется —
+// это самый дешёвый способ отдать ценность без вызова модели на каждого ученика.
 model CaseCard {
   id           String   @id @default(cuid())
   topicId      String   @unique @map("topic_id")
   topic        Topic    @relation(fields: [topicId], references: [id], onDelete: Cascade)
-  // string[] — who is affected and how.
+  // string[] — кого затрагивает резолюция.
   stakeholders Json
-  // string[] — the 2–3 clashes this motion actually turns on.
+  // { title, gov, opp }[] — вероятные точки столкновения.
   clashes      Json
-  // string[] — typical lines for each side, as raw material, not a script.
-  proArguments Json     @map("pro_arguments")
-  conArguments Json     @map("con_arguments")
-  // string[] — common traps and weak moves on this motion.
+  // string[] — типовые аргументы стороны.
+  govLines     Json     @map("gov_lines")
+  oppLines     Json     @map("opp_lines")
+  // string[] — ловушки, на которых обычно сыпятся.
   traps        Json
-  // Set once a coach has signed off. Unreviewed cards render with a warning.
-  reviewedAt   DateTime? @map("reviewed_at")
-  reviewedBy   String?   @map("reviewed_by")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
+  // Версия промпта: если поменяли генератор, старые карты видно.
+  promptVersion String  @default("2026-08") @map("prompt_version")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@map("case_cards")
 }
+
+// Ядро v2: одна тренировочная сессия.
+model PracticeSession {
+  id          String        @id @default(cuid())
+  userId      String        @map("user_id")
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topicId     String        @map("topic_id")
+  topic       Topic         @relation(fields: [topicId], references: [id])
+  mode        SessionMode   @default(SPEECH)
+  status      SessionStatus @default(PREP)
+  role        SpeakerRole   @default(PM)
+  stance      Stance
+  // Навык, под который заточена сессия. Приходит из profile.focusSkill.
+  focusSkill  SkillKey?     @map("focus_skill")
+
+  // Речь ученика (STT или текстовый fallback).
+  speechText  String?       @map("speech_text")
+  speechSec   Int?          @map("speech_sec")
+  // POI, прилетевший в середине речи. Единственное, что осталось от оппонента.
+  poiText     String?       @map("poi_text")
+  poiAnswer   String?       @map("poi_answer")
+
+  // Ballot.
+  totalScore  Int?          @map("total_score")
+  summaryText String?       @map("summary_text")
+  strengths   Json          @default("[]")
+  weaknesses  Json          @default("[]")
+  // Ровно один следующий дрилл. Не список советов.
+  drillText   String?       @map("drill_text")
+  drillSkill  SkillKey?     @map("drill_skill")
+  ratingDelta Int           @default(0) @map("rating_delta")
+
+  costUsd     Decimal       @default(0) @db.Decimal(10, 6) @map("cost_usd")
+  purgedAt    DateTime?     @map("purged_at")
+  completedAt DateTime?     @map("completed_at")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  scores SessionScore[]
+
+  @@index([userId, status])
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("practice_sessions")
+}
+
+model SessionScore {
+  id        String          @id @default(cuid())
+  sessionId String          @map("session_id")
+  session   PracticeSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  skill     SkillKey
+  score     Int
+  comment   String?
+  createdAt DateTime        @default(now()) @map("created_at")
+
+  @@unique([sessionId, skill])
+  @@index([skill])
+  @@map("session_scores")
+}
+
+// Учёт КАЖДОГО платного вызова. Миграция появилась раньше модели, из-за чего
+// prisma.usageEvent не существовал и весь spend-контроль был мёртвым кодом.
+model UsageEvent {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Может ссылаться и на сессию, и на раунд — поэтому без внешнего ключа.
+  roundId   String?   @map("round_id")
+  kind      UsageKind
+  provider  String
+  model     String
+  tokensIn  Int       @default(0) @map("tokens_in")
+  tokensOut Int       @default(0) @map("tokens_out")
+  // Токены для LLM, секунды для STT, символы для TTS.
+  units     Int       @default(0)
+  costUsd   Decimal   @default(0) @db.Decimal(10, 6) @map("cost_usd")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([kind, createdAt])
+  @@map("usage_events")
+}
+
+// ── Legacy v1: раунды с тремя обменами. Только чтение истории. ──────────
 
 model DebateRound {
   id            String      @id @default(cuid())
@@ -227,18 +326,11 @@ model DebateRound {
   user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   topicId       String      @map("topic_id")
   topic         Topic       @relation(fields: [topicId], references: [id])
-  mode          RoundMode   @default(SPEECH)
   stance        Stance
   status        RoundStatus @default(SETUP)
-  // Speaker role being trained: PM, LO, DPM, DLO, MG, MO, GW, OW.
-  speakerRole   String?     @map("speaker_role")
   argument      Json?
   transcript    Json        @default("[]") @map("transcript")
   exchangesDone Int         @default(0) @map("exchanges_done")
-  // Wall-clock length of the recorded speech. Feeds the SPEED score and the
-  // "did you use your time" note in the ballot.
-  speechSeconds Int?        @map("speech_seconds")
-  // Denormalised for the round list. usage_events remains authoritative.
   costEstimateUsd Decimal?  @db.Decimal(8, 4) @map("cost_estimate_usd")
   focusSkill    SkillKey?   @map("focus_skill")
   purgedAt      DateTime?   @map("purged_at")
@@ -250,12 +342,10 @@ model DebateRound {
   turns       DebateTurn[]
   skillScores SkillScore[]
   feedback    RoundFeedback?
-  usageEvents UsageEvent[]
 
   @@index([userId, status])
   @@index([userId, completedAt])
   @@index([userId, createdAt])
-  @@index([userId, mode, createdAt])
   @@index([createdAt])
   @@map("debate_rounds")
 }
@@ -279,7 +369,6 @@ model DebateTurn {
   purgedAt     DateTime? @map("purged_at")
   createdAt    DateTime  @default(now()) @map("created_at")
 
-  @@unique([roundId, idx])
   @@index([roundId, idx])
   @@index([createdAt])
   @@map("debate_turns")
@@ -303,44 +392,15 @@ model RoundFeedback {
   id           String   @id @default(cuid())
   roundId      String   @unique @map("round_id")
   round        DebateRound @relation(fields: [roundId], references: [id], onDelete: Cascade)
-  totalScore   Int // 0–50
+  totalScore   Int
   strengths    Json
   weaknesses   Json
   advice       Json
   summaryText  String  @map("summary_text")
-  // The one thing to do next. The survey's loudest complaint was feedback
-  // that arrives "sometimes" and leads nowhere, so a ballot without a drill
-  // is considered incomplete.
-  drillSkill   SkillKey? @map("drill_skill")
-  drillPrompt  String?   @map("drill_prompt")
   createdAt    DateTime @default(now()) @map("created_at")
 
   @@index([createdAt])
   @@map("round_feedback")
-}
-
-// Every paid AI call. Written before the budget is re-read, so the daily cap
-// sees STT and TTS too. Previously both bypassed every spend control.
-model UsageEvent {
-  id        String   @id @default(cuid())
-  userId    String   @map("user_id")
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  roundId   String?  @map("round_id")
-  round     DebateRound? @relation(fields: [roundId], references: [id], onDelete: SetNull)
-  kind      UsageKind
-  provider  String
-  model     String
-  tokensIn  Int      @default(0) @map("tokens_in")
-  tokensOut Int      @default(0) @map("tokens_out")
-  /// Tokens for LLM, seconds for STT, characters for TTS.
-  units     Int      @default(0)
-  costUsd   Decimal  @default(0) @db.Decimal(10, 6) @map("cost_usd")
-  createdAt DateTime @default(now()) @map("created_at")
-
-  @@index([userId, createdAt])
-  @@index([kind, createdAt])
-  @@index([roundId])
-  @@map("usage_events")
 }
 
 model OnboardingQuiz {

@@ -1,11 +1,14 @@
-# Nightly judge evaluation against the golden set.
+# Ночная оценка судьи по golden-set.
 #
-# Costs real tokens, so it is NOT part of the per-push CI. It answers the one
-# question the product cannot ship without: are the marks we show students
-# stable and close to the reference marks?
+# Тратит настоящие токены, поэтому не входит в CI на каждый пуш. Отвечает на
+# вопрос, без которого продукт нельзя выпускать: оценки, которые мы показываем
+# ученику, стабильны и близки к эталонным?
 #
-# Requires the OPENROUTER_API_KEY repository secret. Without it the job skips
-# instead of failing, so forks are not spammed with red builds.
+# v2 меряет судью РЕЧИ. Судья раундов v1 остался в репозитории ради истории,
+# но продукт им не пользуется, поэтому он больше не блокирует прогон.
+#
+# Нужен секрет OPENROUTER_API_KEY. Без него job пропускается, а не падает,
+# чтобы форки не заваливало красными билдами.
 
 name: Judge eval
 
@@ -18,14 +21,18 @@ on:
         description: 'Порог средней абсолютной ошибки'
         required: false
         default: '1.5'
+      drillThreshold:
+        description: 'Минимальная доля дриллов, попавших в слабое место'
+        required: false
+        default: '0.6'
 
 jobs:
   eval:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      # The eval never touches Postgres or Redis, but @talqyla/config validates
-      # the whole env at import time, so these have to parse.
+      # Eval не трогает Postgres и Redis, но @talqyla/config валидирует всё
+      # окружение на импорте, поэтому переменные обязаны распарситься.
       NODE_ENV: development
       DATABASE_URL: postgresql://eval:eval@localhost:5432/eval?schema=public
       REDIS_URL: redis://localhost:6379
@@ -34,6 +41,7 @@ jobs:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       EVAL_MAE_THRESHOLD: ${{ github.event.inputs.maeThreshold || '1.5' }}
       EVAL_SPREAD_THRESHOLD: '2.0'
+      EVAL_DRILL_THRESHOLD: ${{ github.event.inputs.drillThreshold || '0.6' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -67,6 +75,13 @@ jobs:
         if: steps.guard.outputs.run == 'true'
         run: pnpm db:generate
 
-      - name: Run judge eval
+      # Основной прогон: точность, стабильность и попадание дрилла.
+      - name: Run speech judge eval (v2)
         if: steps.guard.outputs.run == 'true'
+        run: pnpm eval:speech:live
+
+      # Судья v1 больше не в продукте: гоняем только как отчёт, не как гейт.
+      - name: Run legacy round judge eval (report only)
+        if: steps.guard.outputs.run == 'true'
+        continue-on-error: true
         run: pnpm eval:judge:live

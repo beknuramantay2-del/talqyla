@@ -1,146 +1,125 @@
-// Dashboard routes — statistics and recent activity for the student.
+// Dashboard v2 — прогресс по сессиям, а не по раундам.
+//
+// Старая версия грузила ВСЕ завершённые раунды со связями в память и считала
+// средние в JS. На активном ученике это десятки объектов на каждый заход в
+// дашборд. Теперь агрегация делается в SQL, а в память приходят только
+// последние пять сессий для ленты.
 import { prisma, type SkillKey } from '@talqyla/db';
-import { SKILL_KEYS } from '@talqyla/config';
+import { SKILL_KEYS, SKILL_LABELS_RU, MAX_SESSION_SCORE } from '@talqyla/config';
 import { notFound } from '../lib/errors.js';
 import type { TypedFastifyInstance } from '../types/fastify.js';
 
 export async function dashboardRoutes(app: TypedFastifyInstance): Promise<void> {
-  app.get(
-    '/dashboard/stats',
-    {
-      preHandler: app.requireAuth,
-    },
-    async (req, reply) => {
-      const userId = req.user!.id;
+  app.get('/dashboard/stats', { preHandler: app.requireAuth }, async (req, reply) => {
+    const userId = req.user!.id;
 
-      // Ensure student profile exists
-      const profile = await prisma.studentProfile.findUnique({
+    const profile = await prisma.studentProfile.findUnique({ where: { userId } });
+    if (!profile) throw notFound('Профиль ученика не найден');
+
+    const [agg, bySkill, recent] = await Promise.all([
+      prisma.practiceSession.aggregate({
+        where: { userId, status: 'COMPLETED' },
+        _count: { _all: true },
+        _avg: { totalScore: true },
+      }),
+      prisma.sessionScore.groupBy({
+        by: ['skill'],
+        where: { session: { userId, status: 'COMPLETED' } },
+        _avg: { score: true },
+        _count: { _all: true },
+      }),
+      prisma.practiceSession.findMany({
         where: { userId },
-      });
-      if (!profile) throw notFound('Профиль ученика не найден');
-
-      // Fetch completed rounds and their scores
-      const completedRounds = await prisma.debateRound.findMany({
-        where: {
-          userId,
-          status: 'COMPLETED',
+        select: {
+          id: true,
+          mode: true,
+          status: true,
+          stance: true,
+          role: true,
+          totalScore: true,
+          drillSkill: true,
+          createdAt: true,
+          topic: { select: { title: true, category: true } },
         },
-        include: {
-          skillScores: true,
-          feedback: true,
-        },
-        orderBy: {
-          completedAt: 'desc',
-        },
-      });
-
-      const totalRounds = completedRounds.length;
-
-      // Calculate overall average score (0 to 10 scale per skill, total score out of 50 in feedback)
-      // We can average either the feedback.totalScore / 5 or individual SkillScore averages.
-      let averageScore = 0;
-      if (totalRounds > 0) {
-        const sum = completedRounds.reduce((acc, round) => {
-          if (round.feedback) {
-            return acc + round.feedback.totalScore;
-          }
-          // Fallback: sum skill scores if feedback row is missing
-          const roundSum = round.skillScores.reduce((s, ss) => s + ss.score, 0);
-          return acc + roundSum;
-        }, 0);
-        // Average total score out of 50. Let's convert to an average out of 10 for a standard rating.
-        averageScore = Number((sum / totalRounds / 5).toFixed(1));
-      }
-
-      // Calculate skill averages for the radar chart
-      const skillSums: Record<SkillKey, number> = {
-        STRUCTURE: 0,
-        CONTENT: 0,
-        REFUTATION: 0,
-        LOGIC: 0,
-        DELIVERY: 0,
-      };
-      const skillCounts: Record<SkillKey, number> = {
-        STRUCTURE: 0,
-        CONTENT: 0,
-        REFUTATION: 0,
-        LOGIC: 0,
-        DELIVERY: 0,
-      };
-
-      for (const round of completedRounds) {
-        for (const score of round.skillScores) {
-          const key = score.skill as SkillKey;
-          if (key in skillSums) {
-            skillSums[key] += score.score;
-            skillCounts[key] += 1;
-          }
-        }
-      }
-
-      const radarData = SKILL_KEYS.map((key) => {
-        const count = skillCounts[key];
-        const avg = count > 0 ? Number((skillSums[key] / count).toFixed(1)) : 0;
-        return {
-          skill: key,
-          score: avg,
-        };
-      });
-
-      // Determine recommended focus skill (the one with the lowest score)
-      let recommendedFocusSkill: SkillKey | null = profile.focusSkill as SkillKey | null;
-      if (!recommendedFocusSkill && totalRounds > 0) {
-        let minScore = Infinity;
-        let minSkill: SkillKey | null = null;
-        for (const key of SKILL_KEYS) {
-          const count = skillCounts[key];
-          const avg = count > 0 ? skillSums[key] / count : 0;
-          if (avg < minScore) {
-            minScore = avg;
-            minSkill = key;
-          }
-        }
-        recommendedFocusSkill = minSkill;
-      }
-
-      // Get 5 most recent rounds (completed or in progress)
-      const recentRoundsRaw = await prisma.debateRound.findMany({
-        where: { userId },
-        include: {
-          topic: true,
-          feedback: true,
-        },
-        orderBy: {
-          createdAt: 'desc',
-        },
+        orderBy: { createdAt: 'desc' },
         take: 5,
-      });
+      }),
+    ]);
 
-      const recentRounds = recentRoundsRaw.map((r) => ({
-        id: r.id,
-        topicTitle: r.topic.title,
-        category: r.topic.category,
-        stance: r.stance,
-        status: r.status,
-        score: r.feedback?.totalScore ?? null,
-        createdAt: r.createdAt,
-      }));
+    const avgFor = (skill: SkillKey) => {
+      const row = bySkill.find((r) => r.skill === skill);
+      return row?._avg.score != null ? Number(row._avg.score.toFixed(1)) : 0;
+    };
 
-      return reply.send({
-        profile: {
-          grade: profile.grade,
-          experienceLevel: profile.experienceLevel,
-          goal: profile.goal,
-          roundsPlayed: profile.roundsPlayed,
-        },
-        stats: {
-          totalRounds,
-          averageScore,
-          focusSkill: recommendedFocusSkill,
-          radarData,
-        },
-        recentRounds,
-      });
-    }
-  );
+    // Радар строится по рубрике v2. Навыки без единой оценки честно показывают
+    // ноль и подпись «нет данных», а не выдуманное среднее.
+    const radarData = SKILL_KEYS.map((skill) => ({
+      skill,
+      label: SKILL_LABELS_RU[skill],
+      score: avgFor(skill),
+      samples: bySkill.find((r) => r.skill === skill)?._count._all ?? 0,
+    }));
+
+    const totalSessions = agg._count._all;
+    const scored = radarData.filter((r) => r.samples > 0);
+    const focusSkill =
+      (profile.focusSkill as SkillKey | null) ??
+      (scored.length > 0 ? scored.reduce((min, r) => (r.score < min.score ? r : min)).skill : null);
+
+    return reply.send({
+      profile: {
+        grade: profile.grade,
+        experienceLevel: profile.experienceLevel,
+        goal: profile.goal,
+        sessionsPlayed: profile.sessionsPlayed,
+        ratingPoints: profile.ratingPoints,
+        streakDays: profile.streakDays,
+        lastSessionAt: profile.lastSessionAt,
+      },
+      stats: {
+        totalSessions,
+        maxScore: MAX_SESSION_SCORE,
+        averageScore: agg._avg.totalScore != null ? Number(agg._avg.totalScore.toFixed(1)) : 0,
+        focusSkill,
+        focusLabel: focusSkill ? SKILL_LABELS_RU[focusSkill] : null,
+        radarData,
+      },
+      recentSessions: recent.map((s) => ({
+        id: s.id,
+        mode: s.mode,
+        status: s.status,
+        stance: s.stance,
+        role: s.role,
+        topicTitle: s.topic.title,
+        category: s.topic.category,
+        score: s.totalScore,
+        drillSkill: s.drillSkill,
+        createdAt: s.createdAt,
+      })),
+    });
+  });
+
+  // Недельная лига. Считает ПРИРОСТ, а не объём: иначе таблицу выигрывает тот,
+  // у кого больше свободного времени.
+  app.get('/dashboard/league', { preHandler: app.requireAuth }, async (req, reply) => {
+    const top = await prisma.studentProfile.findMany({
+      where: { ratingPoints: { gt: 0 } },
+      select: { userId: true, ratingPoints: true, sessionsPlayed: true, user: { select: { name: true } } },
+      orderBy: { ratingPoints: 'desc' },
+      take: 20,
+    });
+
+    const me = top.findIndex((row) => row.userId === req.user!.id);
+
+    return reply.send({
+      items: top.map((row, index) => ({
+        rank: index + 1,
+        name: row.user.name,
+        ratingPoints: row.ratingPoints,
+        sessionsPlayed: row.sessionsPlayed,
+        isMe: row.userId === req.user!.id,
+      })),
+      myRank: me >= 0 ? me + 1 : null,
+    });
+  });
 }

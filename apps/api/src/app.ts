@@ -20,6 +20,7 @@ import { topicsRoutes } from './routes/topics.js';
 import { dashboardRoutes } from './routes/dashboard.js';
 import { voiceRoutes } from './routes/voice.js';
 import { roundRoutes } from './routes/rounds.js';
+import { sessionRoutes } from './routes/sessions.js';
 import { meRoutes } from './routes/me.js';
 
 type TypedFastify = FastifyInstance;
@@ -41,9 +42,21 @@ export async function buildApp() {
   await app.register(cookie, { secret: env.JWT_ACCESS_SECRET });
   await app.register(rateLimit, { global: false, max: env.RATE_LIMIT_MAX, timeWindow: env.RATE_LIMIT_WINDOW_MS, ...(env.NODE_ENV !== 'test' ? { redis: redis as never } : {}), keyGenerator: (req) => { const auth = req.headers.authorization; const subject = auth && auth.startsWith('Bearer ') ? `s:${createHash('sha256').update(auth.slice(7).trim()).digest('hex').slice(0, 24)}` : `ip:${req.ip}`; return `${subject}:${req.routeOptions.url ?? req.url}`; }, hook: 'onRequest', addHeadersOnExceeding: { 'x-ratelimit-limit': true, 'x-ratelimit-remaining': true, 'x-ratelimit-reset': true }, addHeaders: { 'x-ratelimit-limit': true, 'x-ratelimit-remaining': true, 'x-ratelimit-reset': true, 'retry-after': true } });
   await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } });
-  await app.register(swagger, { openapi: { info: { title: 'ДебатоТренер API', version: '0.1.0' }, servers: [{ url: env.API_BASE_URL }] } });
+  await app.register(swagger, { openapi: { info: { title: 'Talqyla API', version: '0.2.0' }, servers: [{ url: env.API_BASE_URL }] } });
   if (env.NODE_ENV !== 'production') await app.register(swaggerUi, { routePrefix: '/docs' });
   await registerAuthPlugins(app); registerOwnershipGuards(app); registerErrorHandler(app);
-  await app.register(async (api: TypedFastify) => { await api.register(healthRoutes); await api.register(authRoutes, { prefix: '/auth' }); await api.register(meRoutes); await api.register(onboardingRoutes); await api.register(topicsRoutes); await api.register(dashboardRoutes); await api.register(voiceRoutes); await api.register(roundRoutes); }, { prefix: '/api/v1' });
+  await app.register(async (api: TypedFastify) => {
+    await api.register(healthRoutes);
+    await api.register(authRoutes, { prefix: '/auth' });
+    await api.register(meRoutes);
+    await api.register(onboardingRoutes);
+    await api.register(topicsRoutes);
+    await api.register(dashboardRoutes);
+    await api.register(voiceRoutes);
+    // v2: тренировочные сессии.
+    await api.register(sessionRoutes);
+    // Legacy v1: раунды из трёх обменов. Живут, пока не перенесена история.
+    await api.register(roundRoutes);
+  }, { prefix: '/api/v1' });
   return app;
 }

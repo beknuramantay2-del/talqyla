@@ -1,32 +1,73 @@
-# ДебатоТренер
+# Talqyla
 
-**Talqyla is a structured debate coach for school students, not another AI chat.** A student builds a Claim → Warrant → Impact case, faces a focused sparring opponent, then receives a coach-grade ballot and a concrete next drill.
+**Тренажёр между турнирами для дебатёров.** Одна речь, разбор уровня тренера,
+один конкретный дрилл и видимый рейтинг.
 
-The first wedge is Russian/Kazakh-ready school debate practice for grades 7–11: short, repeatable rounds that work without a partner and build a visible skill graph over time.
+Это не чат с AI и не спарринг-партнёр. Опрос 16 практикующих дебатёров показал,
+что нехватка оппонентов волнует 6% из них, а нехватка практики, материала и
+регулярного фидбека — 81%, 50% и 56%. Продукт построен под эти цифры.
+Подробности: [`docs/product-strategy-v2.md`](docs/product-strategy-v2.md).
 
-## Product loop
+## Как проходит тренировка
 
-`Motion → Case → Cross-question → Counterpunch → Ballot → Next drill`
+```
+Тема и роль → Кейс-карта → Речь (голосом) → Ballot + один дрилл
+   30 сек        2–3 мин       3–4 мин           мгновенно
+```
 
-The product is deliberately turn-based in the MVP. We do not pretend a REST round is realtime conversation. Voice is an input mode today; realtime interruption is a later format upgrade, not marketing fiction.
+Три режима на одном движке:
 
-## Why it is not a wrapper
+| Режим | Время | Для чего |
+|---|---|---|
+| **Речь** | 8–12 мин | основной цикл: подготовка, речь, разбор |
+| **Блиц** | 60–90 сек | скорость мышления, помещается в перемену |
+| **Разбор** | 3–5 мин | только кейс-карта, без речи |
 
-- Fixed debate methodology, not open chat.
-- Separate opponent and judge roles.
-- Weakest skill becomes the next round's pressure point.
-- Feedback must cite the student's words and end with an actionable drill.
-- Progress is measured across rounds, not by decorative usage counters.
+## Что оценивает судья
 
-## MVP scope
+Структура речи · Анализ кейса · Опровержение · Скорость мышления · Аргументация.
 
-- Structured Claim / Warrant / Impact builder.
-- Three-exchange Debate Arena with visible phases.
-- Voice-to-text input, with typed fallback.
-- Ballot scoring across Structure, Content, Refutation, Logic, and Delivery.
-- Parent consent, transcript retention, export and deletion controls.
-- Daily spend caps, schema-validated model output, judge eval harness and security release gate.
+Каждое замечание обязано содержать дословную цитату из речи, а на выходе ровно
+один дрилл на 60 секунд. Подача не оценивается: её не назвал ни один респондент.
 
-## Positioning details
+## Экономика
 
-See [`docs/product-positioning.md`](docs/product-positioning.md) for the wedge, buyer, north-star metrics and roadmap rules.
+Один обязательный платный вызов на сессию — судья. POI опционален
+(`POI_ENABLED=false` выключает его), кейс-карта генерируется один раз на тему и
+дальше отдаётся из БД. Себестоимость сессии ~$0.007–0.009 против ~$0.018 у
+раунда v1 с тремя ходами оппонента.
+
+Все платные вызовы (LLM, STT, TTS) пишутся в `usage_events` и проходят суточный
+кап ДО обращения к провайдеру.
+
+## Стек
+
+Next.js + Fastify + Postgres/Prisma + Redis, монорепо на pnpm.
+
+```bash
+cp .env.example .env
+pnpm install
+pnpm infra:up          # postgres + redis
+pnpm db:migrate && pnpm db:seed
+pnpm dev               # web :3000, api :4000
+```
+
+Без ключей всё работает в режиме `stub`: детерминированные ответы, нулевая
+стоимость, полностью проходимый UI.
+
+## Проверки
+
+```bash
+pnpm db:generate       # обязателен после смены схемы
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm smoke             # против поднятого API
+```
+
+## Статус
+
+v2 переведён на модель «одна речь». Раунды v1 остаются в БД и API только для
+чтения истории. До публичного пилота нужны: юридический текст родительского
+согласия, golden set судьи под новую рубрику с подписью живого тренера,
+бэкапы базы.

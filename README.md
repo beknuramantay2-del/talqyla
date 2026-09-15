@@ -1,67 +1,34 @@
 # Talqyla
 
-**Тренажёр между турнирами.** Одна речь, разбор уровня тренера, один конкретный
-дрилл и видимый рейтинг. Не чат с AI и не спарринг-партнёр.
+Talqyla is an AI debate trainer for a Telegram Mini App. It follows: **SKILL → CASE → 1v1 SPARRING → JUDGE → FEEDBACK → NEXT SKILL**.
 
-## Почему так
+## MVP
+- Home: Debate Skill 74, progress bar, +6 since last training, Start Debate, Your Progress, Recent Training.
+- Active Debate: Round 1–4, timer placeholder, progress, AI Opponent, topic, microphone affordance, required text input.
+- Result: Debate Skill before/after, strongest skill, needs-work skill, 2–3 feedback cards, Next Debate.
 
-Опрос 16 практикующих дебатёров (август 2026):
+## Architecture
+- `frontend/`: React + TypeScript Telegram Mini App mobile shell.
+- `backend/`: Node.js TypeScript REST API and debate engine.
+- `shared/`: DebateSession and shared domain types.
 
-- нехватка практики — **81%**
-- нехватка материала для подготовки — **50%**
-- фидбек «иногда» — **56%**, «никогда» — 0%
-- нехватка сильных оппонентов — **6%**
-- «неважно с кем, главное качественная практика» — **62.5%**
-- подачу (delivery) как проблему не назвал **никто**
+Backend is split into debate session, topic generation, opponent, judge/scoring, skill progression, and prompt boundaries.
 
-Поэтому AI-оппонент перестал быть ядром продукта: он решал проблему шести
-процентов. Ядро — судья и материал. Подробности: [`docs/product-strategy-v2.md`](docs/product-strategy-v2.md).
+## Prompts
+`OPPONENT_SYSTEM_PROMPT`, `JUDGE_SYSTEM_PROMPT`, `COACH_SYSTEM_PROMPT`, and `TOPIC_GENERATOR_PROMPT` are separated in `backend/src/prompts.ts`.
 
-## Цикл тренировки
-
-`Роль → Кейс-карта → Речь (голосом) → Ballot → Дрилл`
-
-Три режима на одном движке:
-
-| Режим | Время | Что тренирует |
-|---|---|---|
-| **Речь** | 8–12 мин | структура, анализ кейса, опровержение |
-| **Блиц** | 60–90 сек | скорость мышления |
-| **Разбор** | 3–5 мин | анализ темы, без речи |
-
-## Рубрика судьи
-
-Структура речи · Анализ кейса · Опровержение · Скорость мышления · Аргументация.
-Максимум 50. Подача выведена из оценки.
-
-## Экономика
-
-Один обязательный платный вызов на сессию: судья. POI опционален, кейс-карта
-кешируется на тему. Себестоимость сессии **~$0.007** против ~$0.015 у раунда v1.
-См. [`docs/ai-cost-model.md`](docs/ai-cost-model.md).
-
-## Запуск
-
+## Run locally
 ```bash
-pnpm install
-cp .env.example .env
-pnpm infra:up          # Postgres + Redis
-pnpm db:deploy         # миграции
-pnpm db:seed           # каталог тем
-pnpm dev               # web :3000, api :4000
+npm test
+node --import tsx backend/src/app.ts
 ```
+API: `http://localhost:8787`.
 
-Без ключей всё работает: `STT_PROVIDER`, `TTS_PROVIDER` и LLM уходят в `stub`.
+## Env
+See `.env.example`. Mock mode works without API keys. `OPENAI_API_KEY` and `TELEGRAM_BOT_TOKEN` are optional for local MVP.
 
-## Проверки
+## Scoring
+Initial skills: Argumentation 72, Counterargumentation 61, Rebuttal 68, Structure 77. Overall score is the rounded average. Judge score changes the target skill with a stable explainable formula.
 
-```bash
-pnpm db:generate && pnpm typecheck && pnpm test && pnpm -r run build
-pnpm smoke             # HTTP-флоу против запущенного API
-```
-
-## Состояние
-
-v2 переведён на сессии. Раунды v1 (`/rounds`) остаются доступными только для
-чтения истории. Что ещё закрыть до пилота — в
-[`docs/staging-and-launch.md`](docs/staging-and-launch.md).
+## Next Skill
+If the trained skill is still below 70, repeat it. Otherwise choose the lowest skill.

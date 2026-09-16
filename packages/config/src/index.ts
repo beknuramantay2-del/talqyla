@@ -8,15 +8,11 @@ const envBool = z
 
 const DEFAULT_DEV_SECRET = 'change-me-access-secret-min-16-chars';
 
-/**
- * Fill required non-secret env from Railway plugins/domain so the user only pastes API keys.
- * Never reads or writes GitHub secrets. Real keys stay in Railway Variables.
- */
 function applyRuntimeDefaults(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...source };
   const onRailway = Boolean(env.RAILWAY_ENVIRONMENT || env.RAILWAY_PROJECT_ID);
   const publicDomain = env.RAILWAY_PUBLIC_DOMAIN?.trim();
-  const publicUrl = publicDomain ? `https://${publicDomain}` : undefined;
+  const publicUrl = publicDomain ? 'https://' + publicDomain : undefined;
 
   if (onRailway && !env.NODE_ENV) {
     env.NODE_ENV = 'production';
@@ -35,13 +31,13 @@ function applyRuntimeDefaults(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   }
 
   if (!env.NEXT_PUBLIC_API_URL) {
-    env.NEXT_PUBLIC_API_URL = `${env.API_BASE_URL.replace(/\/$/, '')}/api/v1`;
+    env.NEXT_PUBLIC_API_URL = env.API_BASE_URL.replace(/\/$/, '') + '/api/v1';
   }
 
   if (!env.JWT_ACCESS_SECRET || env.JWT_ACCESS_SECRET.length < 16) {
     const seed =
       env.RAILWAY_PROJECT_ID && env.RAILWAY_SERVICE_ID
-        ? `${env.RAILWAY_PROJECT_ID}:${env.RAILWAY_SERVICE_ID}:talqyla-jwt`
+        ? env.RAILWAY_PROJECT_ID + ':' + env.RAILWAY_SERVICE_ID + ':talqyla-jwt'
         : DEFAULT_DEV_SECRET;
     env.JWT_ACCESS_SECRET =
       seed === DEFAULT_DEV_SECRET ? seed : createHash('sha256').update(seed).digest('hex');
@@ -137,7 +133,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     }
   }).safeParse(resolved);
   if (!parsed.success) {
-    throw new Error(`Invalid environment: ${parsed.error.message}`);
+    throw new Error('Invalid environment: ' + parsed.error.message);
   }
   cached = parsed.data;
   return parsed.data;

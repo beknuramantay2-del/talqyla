@@ -1,15 +1,30 @@
 {
   "name": "talqyla",
+  "version": "0.2.0",
   "private": true,
+  "description": "Talqyla — тренажёр между турнирами для дебатёров: одна речь, разбор судьи, конкретный дрилл и рейтинг.",
   "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
+    "dev": "pnpm --parallel --filter \"./apps/**\" run dev",
+    "dev:web": "pnpm --filter @talqyla/web dev",
+    "dev:api": "pnpm --filter @talqyla/api dev",
     "build": "pnpm --filter @talqyla/db prisma:generate && pnpm --filter @talqyla/config --filter @talqyla/db --filter @talqyla/api run build",
     "start": "node apps/api/dist/server.js",
-    "test": "node tests.js",
+    "lint": "pnpm -r run lint",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test",
+    "smoke": "node scripts/smoke.mjs",
     "db:generate": "pnpm --filter @talqyla/db prisma:generate",
+    "db:migrate": "pnpm --filter @talqyla/db prisma:migrate",
     "db:deploy": "pnpm --filter @talqyla/db prisma:deploy",
     "db:seed": "pnpm --filter @talqyla/db seed",
-    "lint": "pnpm -r run lint",
-    "typecheck": "pnpm -r run typecheck"
+    "postinstall": "pnpm --filter @talqyla/db prisma:generate"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.0"
   }
 }

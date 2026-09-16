@@ -20,6 +20,13 @@ export const llmProviders: ModelProvider[] = [
     enabled: Boolean(env.GROQ_API_KEY),
   },
   {
+    name: 'google',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    apiKey: env.GOOGLE_API_KEY,
+    model: env.GOOGLE_MODEL || 'gemini-3.8-flash',
+    enabled: Boolean(env.GOOGLE_API_KEY),
+  },
+  {
     name: 'openrouter',
     baseUrl: 'https://openrouter.ai/api/v1',
     apiKey: env.OPENROUTER_API_KEY,
@@ -42,13 +49,6 @@ export const llmProviders: ModelProvider[] = [
     },
   },
   {
-    name: 'google',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    apiKey: env.GOOGLE_API_KEY,
-    model: env.GOOGLE_MODEL || 'gemini-1.5-flash',
-    enabled: Boolean(env.GOOGLE_API_KEY),
-  },
-  {
     name: 'opencode_zen',
     baseUrl: env.OPENCODE_ZEN_BASE_URL || '',
     apiKey: env.OPENCODE_ZEN_API_KEY,
@@ -63,6 +63,9 @@ export const sttConfig = {
   deepgramModel: env.DEEPGRAM_MODEL || 'nova-3',
   groqApiKey: env.GROQ_API_KEY,
   groqModel: env.GROQ_STT_MODEL || 'whisper-large-v3-turbo',
+  googleApiKey: env.GOOGLE_API_KEY,
+  googleSttModel: env.GOOGLE_STT_MODEL || 'gemini-3.5-transcribe',
+  assemblyAiApiKey: env.ASSEMBLYAI_API_KEY,
 };
 
 export const telegramConfig = {

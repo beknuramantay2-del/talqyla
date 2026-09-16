@@ -1,7 +1,7 @@
 import { sttConfig } from '../config.js';
 
-export async function transcribeAudio(audio: ArrayBuffer, mimeType = 'audio/webm'): Promise<{ text: string; provider: string; model: string; fallback: boolean }> {
-  if (sttConfig.provider === 'deepgram' && sttConfig.deepgramApiKey) {
+export async function transcribeAudio(audio: ArrayBuffer, mimeType = 'audio/webm') {
+  if ((sttConfig.provider === 'deepgram' || !sttConfig.provider) && sttConfig.deepgramApiKey) {
     const model = sttConfig.deepgramModel;
     const response = await fetch(`https://api.deepgram.com/v1/listen?model=${encodeURIComponent(model)}&smart_format=true`, {
       method: 'POST',

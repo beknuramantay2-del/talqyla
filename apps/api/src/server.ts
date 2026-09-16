@@ -13,9 +13,6 @@ async function start() {
 
   const app = await buildApp();
 
-  // ── Data-retention purge (single-instance deployments) ────────────
-  // For multi-instance, leave RETENTION_JOB_ENABLED off and run
-  // `pnpm retention:purge` from cron so the job does not run N times.
   let retentionTimer: NodeJS.Timeout | null = null;
   if (env.RETENTION_JOB_ENABLED) {
     const runPurge = async () => {
@@ -31,7 +28,6 @@ async function start() {
     retentionTimer.unref();
   }
 
-  // ── Graceful Shutdown ─────────────────────────────────────────────
   const shutdown = async (signal: string) => {
     app.log.warn(`Received ${signal}. Starting graceful shutdown...`);
 
@@ -61,8 +57,9 @@ async function start() {
   process.on('SIGINT', () => shutdown('SIGINT'));
 
   try {
-    await app.listen({ port: env.API_PORT, host: '0.0.0.0' });
-    app.log.info(`ДебатоТренер API listening on http://0.0.0.0:${env.API_PORT}`);
+    const port = Number(process.env.PORT || env.API_PORT);
+    await app.listen({ port, host: '0.0.0.0' });
+    app.log.info(`ДебатоТренер API listening on http://0.0.0.0:${port}`);
     if (env.NODE_ENV !== 'production') {
       app.log.info(`Swagger UI at ${env.API_BASE_URL}/docs`);
     }

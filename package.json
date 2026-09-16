@@ -1,1 +1,15 @@
-{"scripts":{"test":"node tests.js","build":"echo build-ok"},"type":"module"}
+{
+  "name": "talqyla",
+  "private": true,
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "build": "pnpm --filter @talqyla/db prisma:generate && pnpm --filter @talqyla/config --filter @talqyla/db --filter @talqyla/api run build",
+    "start": "node apps/api/dist/server.js",
+    "test": "node tests.js",
+    "db:generate": "pnpm --filter @talqyla/db prisma:generate",
+    "db:deploy": "pnpm --filter @talqyla/db prisma:deploy",
+    "db:seed": "pnpm --filter @talqyla/db seed",
+    "lint": "pnpm -r run lint",
+    "typecheck": "pnpm -r run typecheck"
+  }
+}

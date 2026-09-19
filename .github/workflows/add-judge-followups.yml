@@ -1,0 +1,117 @@
+name: Add Judge follow-up questions
+on:
+  push:
+    paths:
+      - .github/workflows/add-judge-followups.yml
+permissions:
+  contents: write
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Add backend endpoint and result chat
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          backend = Path('backend/src/miniapp-app.ts')
+          text = backend.read_text()
+          old_type = "feedback?:any};"
+          new_type = "feedback?:any;followUps?:Array<{question:string;answer:string;quotes:string[]}>};"
+          if text.count(old_type) != 1:
+              raise SystemExit(f'Expected one Session feedback field, found {text.count(old_type)}')
+          text = text.replace(old_type, new_type, 1)
+
+          old_session = "aiProviders:[provider]};"
+          new_session = "aiProviders:[provider],followUps:[]};"
+          if text.count(old_session) != 1:
+              raise SystemExit(f'Expected one session initializer, found {text.count(old_session)}')
+          text = text.replace(old_session, new_session, 1)
+
+          marker = "const token=process.env.TELEGRAM_BOT_TOKEN"
+          if marker not in text:
+              raise SystemExit('Backend insertion marker not found')
+          followup_function = """async function askJudgeFollowUp(id:string,question:string){
+ const s=sessions.get(id);if(!s)throw Error('Session not found');if(s.status!=='finished'||!s.feedback)throw Error('Round is not finished');
+ s.followUps=s.followUps||[];if(s.followUps.length>=3)throw Error('Follow-up limit reached');
+ const clean=String(question||'').trim();if(clean.length<3)throw Error('Question is too short');if(clean.length>500)throw Error('Question is too long');
+ const transcript=s.messages.map(m=>`${m.speaker==='user'?'УЧЕНИК':'СОПЕРНИК'} (ход ${m.round}): ${m.text}`).join('\\n');
+ const previous=s.followUps.map((item,index)=>`Уточнение ${index+1}: ${item.question}\\nОтвет судьи: ${item.answer}`).join('\\n');
+ const lang=s.language==='kk'?'ИСКЛЮЧИТЕЛЬНО НА КАЗАХСКОМ ЯЗЫКЕ':'ИСКЛЮЧИТЕЛЬНО НА РУССКОМ ЯЗЫКЕ';
+ const ai=await routedChat({responseFormat:'json_object',temperature:.18,maxTokens:900,messages:[
+  {role:'system',content:`Ты тот же судья БПФ, который только что оценил раунд. Пиши ${lang}, без английского. Ответь на уточняющий вопрос кратко, но содержательно. Используй только резолюцию, роли, стенограмму, проверенную рубрику и итоговый фидбек. Не меняй оценку и не придумывай факты. Если вопрос касается конкретного выступления ученика, обязательно приведи одну или несколько ДОСЛОВНЫХ цитат из стенограммы. Если вопрос общий о технике БПФ, можешь объяснить правило без цитаты. Верни только JSON: {"answer":"ответ судьи","quotes":["дословная цитата ученика"]}.`},
+  {role:'user',content:`Резолюция: ${s.motion}\\nРоль ученика: ${s.studentRole}\\nОбязанность роли: ${s.roleDuty}\\nРоль соперника: ${s.opponentRole}\\nСТЕНОГРАММА:\\n${transcript}\\nРУБРИКА:\\n${JSON.stringify(criterionSummary(s))}\\nИТОГОВЫЙ ФИДБЕК:\\n${JSON.stringify(s.feedback)}\\nПРЕДЫДУЩИЕ УТОЧНЕНИЯ:\\n${previous||'нет'}\\nНОВЫЙ ВОПРОС УЧЕНИКА: ${clean}`}
+ ]});
+ const parsed=jsonFrom(ai.text)||{};const texts=studentTexts(s);const quotes=(Array.isArray(parsed.quotes)?parsed.quotes:[]).map((quote:any)=>exactQuote(quote,texts)).filter(Boolean).slice(0,3) as string[];
+ const fallback=local(s,'Не могу подтвердить это по стенограмме. Уточните, какой конкретный фрагмент ответа нужно разобрать.','Мұны стенограмма бойынша растай алмаймын. Қай жауап бөлігін талдау керегін нақтылаңыз.');
+ const answer=safeLocalized(parsed.answer,s,fallback);const item={question:clean,answer,quotes};s.followUps.push(item);
+ return{item,followUps:s.followUps,remaining:Math.max(0,3-s.followUps.length)};
+}
+"""
+          text = text.replace(marker, followup_function + marker, 1)
+
+          route_marker = "if(req.url?.startsWith('/api/debate/')&&req.url.endsWith('/respond'))"
+          if route_marker not in text:
+              raise SystemExit('Respond route marker not found')
+          ask_route = "if(req.url?.startsWith('/api/debate/')&&req.url.endsWith('/ask')&&req.method==='POST'){const id=req.url.split('/')[3]!,b=JSON.parse(raw.toString()||'{}');res.setHeader('content-type','application/json');return res.end(JSON.stringify(await askJudgeFollowUp(id,b.question)))}"
+          text = text.replace(route_marker, ask_route + route_marker, 1)
+          backend.write_text(text)
+
+          frontend = Path('miniapp/app.js')
+          js = frontend.read_text()
+          feedback_marker = "function feedbackCards(items,title)"
+          if feedback_marker not in js:
+              raise SystemExit('Frontend feedback marker not found')
+          chat_code = """function judgeChat(){const items=state.session?.followUps||[],remaining=Math.max(0,3-items.length),ru=state.language!=='kk';return `<section class=\"judge-chat\" id=\"judge-chat\"><div class=\"judge-chat-head\"><div><small>${ru?'После разбора':'Талдаудан кейін'}</small><h2>${ru?'Уточнить у судьи':'Төрешіден нақтылау'}</h2></div><b>${remaining}/3</b></div><p class=\"judge-chat-hint\">${remaining?ru?'Можно задать ещё '+remaining+' вопроса по этому раунду.':'Осы раунд бойынша тағы '+remaining+' сұрақ қоюға болады.':ru?'Лимит из трёх вопросов использован.':'Үш сұрақ лимиті қолданылды.'}</p><div class=\"judge-chat-messages\">${items.map(item=>`<div class=\"chat-user\">${esc(item.question)}</div><div class=\"chat-judge\"><strong>${ru?'Судья':'Төреші'}</strong><p>${esc(item.answer)}</p>${(item.quotes||[]).map(q=>`<div class=\"chat-quote\">«${esc(q)}»</div>`).join('')}</div>`).join('')}</div><textarea id=\"judge-question\" maxlength=\"500\" ${remaining?'':'disabled'} placeholder=\"${ru?'Например: как мне было лучше ответить во втором ходе?':'Мысалы: екінші қадамда қалай жақсырақ жауап беруге болатын еді?'}\"></textarea><button class=\"judge-send\" id=\"ask-judge\" ${remaining?'':'disabled'}>${ru?'Задать вопрос':'Сұрақ қою'}</button></section>`}
+async function askJudge(){if(busy)return;const input=document.querySelector('#judge-question'),question=input?.value.trim();if(!question)return toast(state.language==='kk'?'Сұрақты жазыңыз':'Напишите вопрос');busy=true;const button=document.querySelector('#ask-judge');button.disabled=true;button.textContent=state.language==='kk'?'Төреші жауап беріп жатыр…':'Судья отвечает…';try{const out=await api(`/api/debate/${state.session.sessionId}/ask`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({question})});state.session.followUps=out.followUps;result(false);setTimeout(()=>document.querySelector('#judge-chat')?.scrollIntoView({behavior:'smooth',block:'start'}),50)}catch{toast(t('requestError'));button.disabled=false;button.textContent=state.language==='kk'?'Сұрақ қою':'Задать вопрос'}finally{busy=false}}
+"""
+          js = js.replace(feedback_marker, chat_code + feedback_marker, 1)
+
+          old_result = "function result(){const s=state.session,f=s.feedback;state.completed++;state.skills[state.selected]=f.score;state.history.unshift({topic:s.topic,skill:state.selected,score:f.score,plan:f.plan,criteria:f.criteria,summary:f.summary,date:new Date().toISOString()});save();shell("
+          new_result = "function result(persist=true){const s=state.session,f=s.feedback;if(persist&&!s.resultSaved){state.completed++;state.skills[state.selected]=f.score;state.history.unshift({topic:s.topic,skill:state.selected,score:f.score,plan:f.plan,criteria:f.criteria,summary:f.summary,date:new Date().toISOString()});s.resultSaved=true;save()}shell("
+          if old_result not in js:
+              raise SystemExit('Result function prefix not found')
+          js = js.replace(old_result, new_result, 1)
+
+          old_button = "</section><button class=\"primary wide\" data-go=\"plan\">${t('next')}</button>`)"
+          new_button = "</section>${judgeChat()}<button class=\"primary wide\" data-go=\"plan\">${t('next')}</button>`)"
+          if old_button not in js:
+              raise SystemExit('Result plan button marker not found')
+          js = js.replace(old_button, new_button, 1)
+
+          old_event = "if(b.id==='voice-button')return toggleVoice();"
+          new_event = "if(b.id==='voice-button')return toggleVoice();if(b.id==='ask-judge')return askJudge();"
+          if old_event not in js:
+              raise SystemExit('Click event marker not found')
+          js = js.replace(old_event, new_event, 1)
+          frontend.write_text(js)
+
+          styles = Path('miniapp/styles.css')
+          css = styles.read_text()
+          css += """
+.judge-chat{margin:18px 0;padding:16px;border:1px solid var(--line);border-radius:21px;background:var(--card)}.judge-chat-head{display:flex;align-items:center;justify-content:space-between}.judge-chat-head small{font-size:10px;text-transform:uppercase;color:var(--muted);font-weight:800}.judge-chat-head h2{font-size:18px;margin:3px 0}.judge-chat-head>b{background:var(--blue);color:white;border-radius:12px;padding:7px 9px;font-size:11px}.judge-chat-hint{font-size:11px;line-height:1.45;color:var(--muted)}.judge-chat-messages{display:grid;gap:8px;margin:12px 0}.chat-user{justify-self:end;max-width:88%;padding:10px 12px;border-radius:15px 15px 4px 15px;background:var(--blue);color:white;font-size:12px;line-height:1.45}.chat-judge{justify-self:start;max-width:94%;padding:12px;border-radius:15px 15px 15px 4px;background:#f0eee6;font-size:12px;line-height:1.5}.chat-judge strong{font-size:10px;color:var(--blue)}.chat-judge p{margin:5px 0}.chat-quote{margin-top:7px;padding:7px 9px;border-left:3px solid var(--orange);background:#fffaf1;font-size:10px}.judge-chat textarea{width:100%;min-height:76px;resize:none;padding:12px;border:1px solid var(--line);border-radius:14px;background:white;font-size:12px}.judge-send{width:100%;margin-top:8px;padding:13px;border:0;border-radius:14px;background:var(--ink);color:white;font-weight:800}.judge-send:disabled,.judge-chat textarea:disabled{opacity:.45}
+"""
+          styles.write_text(css)
+
+          index = Path('miniapp/index.html')
+          html = index.read_text().replace('/styles.css?v=7','/styles.css?v=8').replace('/app.js?v=7','/app.js?v=8')
+          index.write_text(html)
+          PY
+      - name: Verify backend and frontend
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm install --no-frozen-lockfile
+          pnpm run build
+          node --check miniapp/app.js
+      - name: Commit verified follow-up chat
+        run: |
+          rm .github/workflows/add-judge-followups.yml
+          git config user.name "Talqyla Judge Builder"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Add three post-round Judge questions"
+          git push origin main

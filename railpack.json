@@ -1,5 +1,0 @@
-{
-  "deploy": {
-    "startCommand": "node backend/dist/app.js"
-  }
-}

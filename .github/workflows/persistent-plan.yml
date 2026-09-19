@@ -1,0 +1,79 @@
+name: Add persistent development plan
+on:
+  push:
+    paths:
+      - .github/workflows/persistent-plan.yml
+permissions:
+  contents: write
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Implement persistent plan and microphone icon
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          app=Path('miniapp/app.js')
+          js=app.read_text()
+
+          old="const initial={onboarded:false,language:null,name:telegramUser.first_name||'',skills:{},history:[],completed:0,selected:null,session:null,screen:'home'};"
+          new="const initial={onboarded:false,language:null,name:telegramUser.first_name||'',skills:{},history:[],completed:0,selected:null,session:null,screen:'home',planTasks:[],planArchive:[],planMeta:null};"
+          if js.count(old)!=1: raise SystemExit('Initial state marker not found exactly once')
+          js=js.replace(old,new,1)
+
+          marker=";function shell(html,show=true)"
+          if marker not in js: raise SystemExit('Plan helper insertion marker missing')
+          helpers=""";const normalizePlanText=x=>String(x||'').toLowerCase().replace(/[^a-zа-яёәіңғүұқөһ0-9]+/gi,' ').trim();function normalizePlanState(){state.planTasks=Array.isArray(state.planTasks)?state.planTasks.filter(Boolean).map((item,index)=>typeof item==='string'?{id:`legacy-${index}-${normalizePlanText(item).slice(0,18)}`,text:item,focus:'',addedAt:null}:item).filter(item=>item?.text):[];state.planArchive=Array.isArray(state.planArchive)?state.planArchive.filter(Boolean).map(item=>typeof item==='string'?{text:item,completedAt:null}:item).filter(item=>item?.text):[]}function mergeDevelopmentPlan(plan,{migration=false}={}){if(!plan)return 0;normalizePlanState();const known=new Set([...state.planTasks,...state.planArchive].map(item=>normalizePlanText(item.text)).filter(Boolean));const incoming=(Array.isArray(plan.exercises)?plan.exercises:[]).map(x=>String(x||'').trim()).filter(Boolean);const allowance=state.planTasks.length?2:4,slots=Math.max(0,7-state.planTasks.length),limit=migration?Math.min(4,slots):Math.min(allowance,slots);let added=0;for(const text of incoming){const key=normalizePlanText(text);if(!key||known.has(key)||added>=limit)continue;state.planTasks.push({id:`plan-${Date.now()}-${added}-${Math.random().toString(36).slice(2,7)}`,text,focus:String(plan.focus||''),addedAt:new Date().toISOString()});known.add(key);added++}state.planMeta={focus:String(plan.focus||state.planMeta?.focus||''),why:String(plan.why||state.planMeta?.why||''),updatedAt:new Date().toISOString()};return added}function ensurePersistentPlan(){normalizePlanState();if(!state.planTasks.length&&!state.planArchive.length&&state.history[0]?.plan){mergeDevelopmentPlan(state.history[0].plan,{migration:true});save()}}function completePlanTask(id){normalizePlanState();const index=state.planTasks.findIndex(item=>item.id===id);if(index<0)return;const [task]=state.planTasks.splice(index,1);state.planArchive.unshift({...task,completedAt:new Date().toISOString()});state.planArchive=state.planArchive.slice(0,100);save();toast(state.language==='kk'?'Қадам орындалды':'Шаг выполнен');plan()}"""
+          js=js.replace(marker,helpers+marker,1)
+
+          plan_replacement="""function plan(){ensurePersistentPlan();const ru=state.language!=='kk',items=state.planTasks||[],meta=state.planMeta,done=state.planArchive?.length||0;shell(`<header class=\"page-head plan-head\"><h1>${ru?'Твой план':'Сенің жоспарың'}</h1><p>${ru?'Незавершённые шаги сохраняются. После раунда добавляется не больше двух новых.':'Аяқталмаған қадамдар сақталады. Раундтан кейін екіден артық жаңа қадам қосылмайды.'}</p></header><div class=\"plan-tabs\"><b>${ru?'Активные '+items.length:'Белсенді '+items.length}</b><span>${ru?'Выполнено '+done:'Орындалды '+done}</span></div>${items.length?`${meta?.focus?`<section class=\"focus-card\"><small>${ru?'Текущий фокус':'Қазіргі бағыт'}</small><h2>${esc(meta.focus)}</h2><p>${esc(meta.why)}</p></section>`:''}<div class=\"plan-policy\"><span>↻</span><p>${ru?'Старые задачи остаются до выполнения. Новые дополняют план, а не заменяют его.':'Ескі тапсырмалар орындалғанша қалады. Жаңалары жоспарды алмастырмай, толықтырады.'}</p></div><div class=\"schedule\">${items.map((item,i)=>`<article class=\"schedule-row\"><div class=\"schedule-day\"><small>${String(i+1).padStart(2,'0')}</small><b>${ru?'Шаг':'Қадам'}</b></div><button class=\"task-check\" data-plan-done=\"${esc(item.id)}\" aria-label=\"${ru?'Отметить выполненным':'Орындалды деп белгілеу'}\"><svg viewBox=\"0 0 24 24\"><path d=\"m6 12 4 4 8-9\"/></svg></button><div><b>${esc(item.text)}</b><small>${item.focus?esc(item.focus):ru?'Персональная практика':'Жеке тәжірибе'}</small></div><button data-go=\"train\" aria-label=\"${ru?'Начать тренировку':'Жаттығуды бастау'}\">›</button></article>`).join('')}</div><button class=\"primary wide\" data-go=\"train\">${ru?'Начать практику':'Тәжірибені бастау'}</button>`:`<section class=\"empty-plan\"><span>✓</span><h2>${done?ru?'Все текущие шаги выполнены':'Барлық ағымдағы қадам орындалды':ru?'План ещё не создан':'Жоспар әлі жасалмады'}</h2><p>${done?ru?'Следующий завершённый раунд добавит новые упражнения, не возвращая уже выполненные.':'Келесі аяқталған раунд бұрын орындалғандарды қайтармай, жаңа жаттығулар қосады.':ru?'Заверши первый раунд — судья создаст персональный план по твоим ответам.':'Алғашқы раундты аяқта — төреші жауаптарың бойынша жеке жоспар жасайды.'}</p><button class=\"primary\" data-go=\"train\">${t('begin')}</button></section>`}`)}function train"""
+          js,count=re.subn(r"function plan\(\)\{.*?\}function train",lambda _:plan_replacement,js,count=1,flags=re.S)
+          if count!=1: raise SystemExit(f'Plan replacement count {count}')
+
+          old_mic='<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"/></svg>'
+          new_mic='<span class="mic-badge"><svg class="mic-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="8.5" y="2.5" width="7" height="12" rx="3.5"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v3"/><path d="M8.5 21h7"/></svg></span>'
+          if js.count(old_mic)!=1: raise SystemExit('Microphone SVG marker not found exactly once')
+          js=js.replace(old_mic,new_mic,1)
+
+          old_result="state.history.unshift({topic:s.topic,skill:state.selected,score:f.score,plan:f.plan,criteria:f.criteria,summary:f.summary,date:new Date().toISOString()});s.resultSaved=true;save()"
+          new_result="state.history.unshift({topic:s.topic,skill:state.selected,score:f.score,plan:f.plan,criteria:f.criteria,summary:f.summary,date:new Date().toISOString()});s.addedPlanSteps=mergeDevelopmentPlan(f.plan);s.resultSaved=true;save()"
+          if js.count(old_result)!=1: raise SystemExit('Result persistence marker not found exactly once')
+          js=js.replace(old_result,new_result,1)
+
+          old_event="if(b.dataset.go)return go(b.dataset.go);if(b.dataset.lang)"
+          new_event="if(b.dataset.go)return go(b.dataset.go);if(b.dataset.planDone)return completePlanTask(b.dataset.planDone);if(b.dataset.lang)"
+          if js.count(old_event)!=1: raise SystemExit('Plan completion event marker missing')
+          js=js.replace(old_event,new_event,1)
+          app.write_text(js)
+
+          css=Path('miniapp/styles.css')
+          styles=css.read_text()
+          styles += """
+.voice-button{align-items:center;min-height:58px;font-size:13px;box-shadow:0 5px 16px rgba(23,73,255,.08)}.mic-badge{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:var(--blue);color:#fff;box-shadow:0 4px 12px rgba(23,73,255,.28)}.mic-icon{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.voice-button.recording .mic-badge{background:#fff;color:#ff5e57;animation:micPulse 1s ease-in-out infinite}.voice-button.recording{box-shadow:0 0 0 4px rgba(255,94,87,.15)}@keyframes micPulse{50%{transform:scale(.88);box-shadow:0 0 0 8px rgba(255,255,255,.18)}}
+.plan-policy{display:grid;grid-template-columns:32px 1fr;align-items:center;gap:9px;background:#eaf0ff;border:1px solid #ccd7ff;border-radius:15px;padding:10px 12px;margin-bottom:10px}.plan-policy>span{width:30px;height:30px;border-radius:10px;display:grid;place-items:center;background:var(--blue);color:#fff;font-size:18px}.plan-policy p{font-size:9px;line-height:1.45;color:#46536a;margin:0}.task-check{padding:0!important;background:#fff!important;cursor:pointer;transition:.18s ease}.task-check svg{width:15px;height:15px;fill:none;stroke:var(--blue);stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;opacity:0;transition:.18s ease}.task-check:hover,.task-check:active{border-color:var(--blue);background:#eaf0ff!important;transform:scale(.94)}.task-check:hover svg,.task-check:active svg{opacity:1}.schedule-row>div:nth-of-type(2) small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:210px}.plan-tabs b,.plan-tabs span{font-variant-numeric:tabular-nums}
+"""
+          css.write_text(styles)
+
+          index=Path('miniapp/index.html')
+          html=index.read_text().replace('/styles.css?v=9','/styles.css?v=10').replace('/app.js?v=9','/app.js?v=10')
+          index.write_text(html)
+          PY
+      - name: Verify application
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm install --no-frozen-lockfile
+          node --check miniapp/app.js
+          pnpm run build
+      - name: Commit verified implementation
+        run: |
+          rm .github/workflows/persistent-plan.yml
+          git config user.name "Talqyla Plan Builder"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Keep unfinished plan steps and improve microphone"
+          git push origin main

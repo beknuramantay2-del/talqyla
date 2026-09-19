@@ -1,0 +1,50 @@
+name: Commit verified BPF implementation
+on:
+  push:
+    paths:
+      - .github/workflows/commit-verified-bpf.yml
+permissions:
+  contents: write
+jobs:
+  commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Apply already verified migration
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          workflow = Path('.github/workflows/apply-bpf-cases.yml').read_text()
+          marker = "          python3 - <<'PY'\n"
+          script = workflow.split(marker, 1)[1].split("\n          PY", 1)[0]
+          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in script.splitlines())
+          script, removed = re.subn(r"old_view = .*?frontend\.write_text\(js\)", "frontend.write_text(js)", script, count=1, flags=re.S)
+          if removed != 1:
+              raise SystemExit('Brittle UI block removal failed')
+          script = script.replace('re.subn(session_pattern, session_replacement, text, count=1)','re.subn(session_pattern, lambda _match: session_replacement, text, count=1)')
+          script = script.replace('re.subn(create_pattern, create_replacement, text, count=1, flags=re.S)','re.subn(create_pattern, lambda _match: create_replacement, text, count=1, flags=re.S)')
+          exec(compile(script, 'prepared_bpf_migration.py', 'exec'))
+          PY
+      - name: Reconfirm production build
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm install --no-frozen-lockfile
+          pnpm run build
+          node --check miniapp/app.js
+      - name: Commit and clean temporary files
+        run: |
+          rm -f BPF_DIAGNOSTIC.txt BPF_DIAGNOSTIC_2.txt
+          rm -f .github/workflows/apply-bpf-cases.yml
+          rm -f .github/workflows/repair-bpf-workflow.yml
+          rm -f .github/workflows/run-bpf-migration.yml
+          rm -f .github/workflows/finalize-bpf-migration.yml
+          rm -f .github/workflows/commit-verified-bpf.yml
+          git config user.name "Talqyla BPF Builder"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Generate unique BPF situational cases"
+          git push origin main

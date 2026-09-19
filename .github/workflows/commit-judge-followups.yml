@@ -1,0 +1,41 @@
+name: Commit verified Judge follow-ups
+on:
+  push:
+    paths:
+      - .github/workflows/commit-judge-followups.yml
+permissions:
+  contents: write
+jobs:
+  commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Apply verified migration
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          workflow=Path('.github/workflows/add-judge-followups.yml').read_text()
+          marker="          python3 - <<'PY'\n"
+          script=workflow.split(marker,1)[1].split("\n          PY",1)[0]
+          script='\n'.join(line[10:] if line.startswith('          ') else line for line in script.splitlines())
+          exec(compile(script,'judge_followups_migration.py','exec'))
+          PY
+      - name: Reconfirm build
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm install --no-frozen-lockfile
+          pnpm run build
+          node --check miniapp/app.js
+      - name: Commit clean result
+        run: |
+          rm -f JUDGE_FOLLOWUPS_DIAGNOSTIC.txt
+          rm -f .github/workflows/add-judge-followups.yml
+          rm -f .github/workflows/commit-judge-followups.yml
+          git config user.name "Talqyla Judge Builder"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Add three post-round Judge questions"
+          git push origin main

@@ -1,5 +1,10 @@
 {
+  "steps": {
+    "build": {
+      "commands": ["pnpm run build"]
+    }
+  },
   "deploy": {
-    "startCommand": "node apps/api/dist/server.js"
+    "startCommand": "node backend/dist/app.js"
   }
 }

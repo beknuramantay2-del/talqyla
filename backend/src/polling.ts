@@ -7,23 +7,18 @@ const localApi = `http://127.0.0.1:${port}`;
 const chatSessions = new Map<number, string>();
 let offset = 0;
 
-const tg = (method: string) => `https://api.telegram.org/bot${token}/${method}`;
+const tg = (method: string) => 'https://api.telegram.org/bot' + token + '/' + method;
 
 async function telegram(method: string, payload?: Record<string, unknown>) {
   const response = await fetch(tg(method), payload ? {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(35_000),
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), signal: AbortSignal.timeout(35_000),
   } : { signal: AbortSignal.timeout(35_000) });
   const data = await response.json() as any;
   if (!response.ok || !data.ok) throw new Error(`Telegram ${method} failed: ${response.status} ${JSON.stringify(data)}`);
   return data.result;
 }
 
-async function send(chatId: number, text: string) {
-  await telegram('sendMessage', { chat_id: chatId, text });
-}
+async function send(chatId: number, text: string) { await telegram('sendMessage', { chat_id: chatId, text }); }
 
 async function startDebate(chatId: number) {
   const response = await fetch(`${localApi}/api/debate/start`, { method: 'POST' });
@@ -41,16 +36,13 @@ async function handleMessage(message: any) {
   if (text === '/start' || text === '/debate') return startDebate(chatId);
   const sessionId = chatSessions.get(chatId);
   if (!sessionId) return send(chatId, 'Напиши /start, чтобы начать тренировку.');
-  const response = await fetch(`${localApi}/api/debate/${sessionId}/respond`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }),
-  });
+  const response = await fetch(`${localApi}/api/debate/${sessionId}/respond`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
   const session = await response.json() as any;
   if (!response.ok) { chatSessions.delete(chatId); return send(chatId, 'Сессия сброшена. Напиши /start ещё раз.'); }
   if (session.status === 'finished') {
     chatSessions.delete(chatId);
     const feedback = session.feedback || {};
-    await send(chatId, `Сессия завершена.\n\nИтог: ${feedback.overallAfter ?? '—'}/100\nСледующий навык: ${session.nextSkill || '—'}\n\nСильные стороны:\n${(feedback.strengths || []).join('\n') || '—'}\n\nЧто улучшить:\n${(feedback.weaknesses || []).join('\n') || '—'}\n\nНапиши /start для новой тренировки.`);
-    return;
+    return send(chatId, `Сессия завершена.\n\nИтог: ${feedback.overallAfter ?? '—'}/100\nСледующий навык: ${session.nextSkill || '—'}\n\nСильные стороны:\n${(feedback.strengths || []).join('\n') || '—'}\n\nЧто улучшить:\n${(feedback.weaknesses || []).join('\n') || '—'}\n\nНапиши /start для новой тренировки.`);
   }
   const reply = session.messages?.[session.messages.length - 1]?.text || 'Продолжай аргумент.';
   await send(chatId, `Раунд ${session.round}/${session.maxRounds}\n\n${reply}`);

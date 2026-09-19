@@ -1,9 +1,7 @@
 import http from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { finalJudge, nextSkill, overall } from './judge/index.js';
-import { judgeUserMove, toLegacySignal } from './judge/moveJudge.js';
+import { finalJudge, nextSkill, overall, judgeUserMove, toLegacySignal } from './judge/index.js';
 
-const skills = ['Argumentation', 'Counterargumentation', 'Rebuttal', 'Structure'];
 let progress: Record<string, number> = { Argumentation: 72, Counterargumentation: 61, Rebuttal: 68, Structure: 77 };
 const sessions = new Map<string, any>();
 const telegramSessions = new Map<number, string>();
@@ -63,7 +61,7 @@ function respond(id: string, text: string) {
 
 const botToken = process.env.TELEGRAM_BOT_TOKEN || '';
 const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET || '';
-const telegramApi = (method: string) => `https://api.telegram.org/bot${botToken}/${method}`;
+const telegramApi = (method: string) => 'https://api.telegram.org/bot' + botToken + '/' + method;
 
 function secureEqual(a: string, b: string): boolean {
   const aa = Buffer.from(a); const bb = Buffer.from(b);
@@ -101,9 +99,9 @@ async function handleTelegram(update: any) {
 async function configureWebhook() {
   if (!botToken) { console.warn('TELEGRAM_BOT_TOKEN is not set; HTTP API works, Telegram bot disabled'); return; }
   const domain = process.env.RAILWAY_PUBLIC_DOMAIN;
-  const baseUrl = process.env.PUBLIC_URL || process.env.API_BASE_URL || (domain ? `https://${domain}` : '');
+  const baseUrl = process.env.PUBLIC_URL || process.env.API_BASE_URL || (domain ? 'https://' + domain : '');
   if (!baseUrl) { console.warn('No public domain found; Telegram webhook was not configured'); return; }
-  const payload: Record<string, unknown> = { url: `${baseUrl.replace(/\/$/, '')}/telegram/webhook`, allowed_updates: ['message'] };
+  const payload: Record<string, unknown> = { url: baseUrl.replace(/\/$/, '') + '/telegram/webhook', allowed_updates: ['message'] };
   if (webhookSecret) payload.secret_token = webhookSecret;
   const response = await fetch(telegramApi('setWebhook'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), signal: AbortSignal.timeout(15000) });
   if (!response.ok) throw Error(`Telegram setWebhook failed: ${response.status} ${await response.text()}`);

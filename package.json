@@ -5,12 +5,10 @@
   "type": "module",
   "description": "Talqyla Telegram debate trainer",
   "packageManager": "pnpm@9.12.0",
-  "engines": {
-    "node": ">=20.0.0"
-  },
+  "engines": { "node": ">=20.0.0" },
   "scripts": {
     "build": "tsc -p backend/tsconfig.json",
-    "start": "node backend/dist/app.js",
+    "start": "node backend/dist/polling.js",
     "test": "node tests.js",
     "lint": "pnpm -r run lint",
     "typecheck": "tsc -p backend/tsconfig.json --noEmit"

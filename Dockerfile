@@ -11,4 +11,4 @@ ENV NODE_ENV=production
 COPY --from=build /app/backend/dist ./backend/dist
 COPY --from=build /app/package.json ./package.json
 EXPOSE 8787
-CMD ["node", "backend/dist/app.js"]
+CMD ["node", "backend/dist/polling.js"]

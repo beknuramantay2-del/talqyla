@@ -1,0 +1,47 @@
+name: Diagnose Talqyla redesign
+on:
+  push:
+    paths:
+      - .github/workflows/diagnose-redesign.yml
+permissions:
+  contents: write
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Run redesign and capture exact result
+        shell: bash
+        run: |
+          set +e
+          python3 - <<'PY' > /tmp/redesign.log 2>&1
+          from pathlib import Path
+          workflow=Path('.github/workflows/redesign-miniapp.yml').read_text()
+          marker="          python3 - <<'PY'\n"
+          script=workflow.split(marker,1)[1].split("\n          PY",1)[0]
+          script='\n'.join(line[10:] if line.startswith('          ') else line for line in script.splitlines())
+          exec(compile(script,'redesign_migration.py','exec'))
+          PY
+          M=$?
+          J=99
+          B=99
+          if [ "$M" -eq 0 ]; then
+            node --check miniapp/app.js >> /tmp/redesign.log 2>&1
+            J=$?
+            corepack enable >> /tmp/redesign.log 2>&1
+            corepack prepare pnpm@9.12.0 --activate >> /tmp/redesign.log 2>&1
+            pnpm install --no-frozen-lockfile >> /tmp/redesign.log 2>&1
+            pnpm run build >> /tmp/redesign.log 2>&1
+            B=$?
+          fi
+          printf 'migration_status=%s\njs_status=%s\nbuild_status=%s\n\n' "$M" "$J" "$B" > /tmp/redesign-status.log
+          git reset --hard HEAD
+          cat /tmp/redesign-status.log /tmp/redesign.log > REDESIGN_DIAGNOSTIC.txt
+          rm .github/workflows/diagnose-redesign.yml
+          git config user.name "Talqyla Design Diagnostics"
+          git config user.email "actions@users.noreply.github.com"
+          git add REDESIGN_DIAGNOSTIC.txt .github/workflows/diagnose-redesign.yml
+          git commit -m "Record visual redesign diagnostic"
+          git push origin main

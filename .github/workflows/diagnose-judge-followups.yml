@@ -1,0 +1,47 @@
+name: Diagnose Judge follow-ups
+on:
+  push:
+    paths:
+      - .github/workflows/diagnose-judge-followups.yml
+permissions:
+  contents: write
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Run prepared migration and capture output
+        shell: bash
+        run: |
+          set +e
+          python3 - <<'PY' > /tmp/followups.log 2>&1
+          from pathlib import Path
+          workflow=Path('.github/workflows/add-judge-followups.yml').read_text()
+          marker="          python3 - <<'PY'\n"
+          script=workflow.split(marker,1)[1].split("\n          PY",1)[0]
+          script='\n'.join(line[10:] if line.startswith('          ') else line for line in script.splitlines())
+          exec(compile(script,'judge_followups_migration.py','exec'))
+          PY
+          M=$?
+          B=99
+          J=99
+          if [ "$M" -eq 0 ]; then
+            corepack enable >> /tmp/followups.log 2>&1
+            corepack prepare pnpm@9.12.0 --activate >> /tmp/followups.log 2>&1
+            pnpm install --no-frozen-lockfile >> /tmp/followups.log 2>&1
+            pnpm run build >> /tmp/followups.log 2>&1
+            B=$?
+            node --check miniapp/app.js >> /tmp/followups.log 2>&1
+            J=$?
+          fi
+          printf 'migration_status=%s\nbuild_status=%s\njs_status=%s\n\n' "$M" "$B" "$J" > /tmp/followups-status.log
+          git reset --hard HEAD
+          cat /tmp/followups-status.log /tmp/followups.log > JUDGE_FOLLOWUPS_DIAGNOSTIC.txt
+          rm .github/workflows/diagnose-judge-followups.yml
+          git config user.name "Talqyla Diagnostics"
+          git config user.email "actions@users.noreply.github.com"
+          git add JUDGE_FOLLOWUPS_DIAGNOSTIC.txt .github/workflows/diagnose-judge-followups.yml
+          git commit -m "Record Judge follow-up diagnostic"
+          git push origin main

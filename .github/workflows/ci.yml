@@ -13,18 +13,6 @@ concurrency:
 permissions:
   contents: read
 
-# ---------------------------------------------------------------------------
-# This block is the single biggest reason CI was red.
-#
-# @talqyla/config ends with `export const env = loadEnv()`, i.e. the ENTIRE
-# environment is Zod-validated at import time. apps/web and apps/api both import
-# it, so `next build` and `tsc` threw "Invalid environment configuration" before
-# compiling a single file: with no env set, DATABASE_URL, JWT_ACCESS_SECRET and
-# API_BASE_URL are all missing.
-#
-# judge-eval.yml already worked around this locally. The workaround belongs here.
-# These are throwaway CI values pointing at nothing. They are not credentials.
-# ---------------------------------------------------------------------------
 env:
   NODE_ENV: development
   DATABASE_URL: postgresql://talqyla:talqyla@localhost:5432/talqyla?schema=public
@@ -35,69 +23,152 @@ env:
   JWT_ACCESS_SECRET: ci-only-secret-not-a-credential
 
 jobs:
-  quality:
-    name: Build, lint, typecheck, unit tests
+  build:
+    name: Build all production code
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
-
+          version: 9.12.0
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Generate Prisma client
-        run: pnpm db:generate
-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
       - name: Build workspace
         run: pnpm -r run build
+      - name: Build Railway backend
+        run: pnpm run build
 
-      - name: Lint
-        run: pnpm lint
+  lint:
+    name: Lint all workspace packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
 
-      - name: Type check
+  typecheck:
+    name: Typecheck Railway backend and workspace
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      - name: Typecheck Railway backend
         run: pnpm typecheck
+      - name: Typecheck workspace
+        run: pnpm -r --if-present typecheck
 
-      # Includes the offline judge-eval guards (golden set integrity, scoring
-      # maths, rubric parsing). The paid accuracy run is in judge-eval.yml.
-      - name: Test
+  tests:
+    name: Root and workspace tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      - name: Test Railway backend
         run: pnpm test
+      - name: Test every workspace package
+        run: pnpm -r --if-present test
 
-      # -- Dependency audit, split into an honest gate and an honest report --
-      #
-      # The old single `--audit-level=high` step blocked every build on Next 14
-      # advisories whose only fix is Next 16, a breaking upgrade that cannot be
-      # rushed through just to unblock a pipeline. A permanently red gate is not
-      # a gate, it is noise that teaches the team to ignore CI.
-      #
-      # So: CRITICAL in the production runtime blocks the build. HIGH is still
-      # run and still reported, but does not block, and this exception dies the
-      # moment the Next upgrade lands. Deliberately NOT `|| true`: the step goes
-      # orange, so the debt stays visible instead of silently passing.
-      - name: Audit production dependencies (critical blocks the build)
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Critical production vulnerabilities
         run: pnpm audit --prod --audit-level=critical
-
-      - name: Audit all dependencies (high, report only until Next 16 lands)
+      - name: High vulnerabilities report
         continue-on-error: true
         run: pnpm audit --audit-level=high
 
-  # Nothing in CI used to touch a database, so green never meant the product
-  # actually boots. This job applies migrations, seeds topics, starts the API and
-  # drives the core user flow over real HTTP.
+  railway-image:
+    name: Build and smoke Railway image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build exact Railway Docker image
+        run: docker build --tag talqyla-railway:${{ github.sha }} .
+      - name: Start production container
+        run: |
+          docker run --detach --rm \
+            --name talqyla-railway-smoke \
+            --publish 127.0.0.1:8787:8080 \
+            --env PORT=8080 \
+            --env NODE_ENV=production \
+            talqyla-railway:${{ github.sha }}
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8787/health > /tmp/health.json; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs talqyla-railway-smoke
+          exit 1
+      - name: Smoke static Mini App
+        run: |
+          curl --fail --silent http://127.0.0.1:8787/ > /tmp/index.html
+          grep -qi "talqyla" /tmp/index.html
+      - name: Smoke debate start in provider-free mode
+        run: |
+          curl --fail --silent \
+            --header 'content-type: application/json' \
+            --data '{"language":"ru","skill":"Опровержение","recentTopics":[]}' \
+            http://127.0.0.1:8787/api/debate/start > /tmp/session.json
+          node -e "const x=require('/tmp/session.json'); if(!x.sessionId||x.status!=='active') process.exit(1)"
+      - name: Container logs
+        if: always()
+        run: docker logs talqyla-railway-smoke || true
+      - name: Stop container
+        if: always()
+        run: docker stop talqyla-railway-smoke || true
+
   integration:
     name: Migrations and smoke test (Postgres + Redis)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: quality
-
+    needs: [build, tests]
     services:
       postgres:
         image: postgres:16-alpine
@@ -112,7 +183,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
       redis:
         image: redis:7-alpine
         ports:
@@ -122,57 +192,34 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
-
+          version: 9.12.0
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # `migrate deploy`, never `migrate dev`. Same command production runs, so a
-      # broken migration fails here instead of on a live database.
-      - name: Apply migrations
-        run: pnpm db:deploy
-
-      - name: Seed topics
-        run: pnpm db:seed
-
-      - name: Build workspace
-        run: pnpm -r run build
-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:deploy
+      - run: pnpm db:seed
+      - run: pnpm -r run build
       - name: Start API
         run: |
           node apps/api/dist/server.js > /tmp/api.log 2>&1 &
           echo $! > /tmp/api.pid
-
       - name: Wait for readiness
         run: |
           for i in $(seq 1 30); do
             if curl -fsS http://localhost:4000/api/v1/health/ready > /dev/null 2>&1; then
-              echo "API is ready after ${i} attempt(s)."
               exit 0
             fi
             sleep 2
           done
-          echo "API never became ready. Logs:"
           cat /tmp/api.log
           exit 1
-
-      # Core flow without paid LLM calls: health, register, refresh, topics,
-      # create round, submit argument, abort, logout. The AI turn and the judge
-      # need a real OpenRouter key and stay in judge-eval.yml.
-      - name: Smoke test
-        run: pnpm smoke
-
+      - run: pnpm smoke
       - name: API logs on failure
         if: failure()
         run: cat /tmp/api.log
@@ -185,8 +232,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

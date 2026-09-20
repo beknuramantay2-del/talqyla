@@ -7,7 +7,7 @@ STT_PROVIDER=auto
 OPENAI_STT_API_KEY_1=sk-proj-...
 OPENAI_STT_API_KEY_2=sk-proj-...
 OPENAI_STT_API_KEY_3=sk-proj-...
-OPENAI_STT_MODEL=gpt-4o-mini-transcribe
+OPENAI_STT_MODEL=gpt-4o-transcribe
 OPENAI_STT_MAX_CONCURRENCY_PER_KEY=1
 OPENAI_STT_COOLDOWN_MS=60000
 DEEPGRAM_API_KEY=...
@@ -18,7 +18,7 @@ GROQ_STT_MODEL=whisper-large-v3-turbo
 
 ## Effective route order
 
-1. Any available OpenAI key using `gpt-4o-mini-transcribe`.
+1. Any available OpenAI key using `gpt-4o-transcribe`.
 2. Deepgram `nova-3` only when all OpenAI slots are busy or cooling down, or OpenAI fails.
 3. Groq `whisper-large-v3-turbo` only when OpenAI and Deepgram are unavailable.
 
@@ -29,7 +29,7 @@ A key that returns 401, 403, 429, a network error, or 5xx enters cooldown. The r
 After Railway redeploys, check `/api/providers`. The STT response should report:
 
 - `routeOrder`: `openai_pool`, `deepgram`, `groq`;
-- `primary.model`: `gpt-4o-mini-transcribe`;
+- `primary.model`: `gpt-4o-transcribe`;
 - `primary.keyCount`: `3` when all three keys are set.
 
 For desktop browsers, the Mini App first uses `MediaRecorder`. If Telegram Desktop or the browser does not expose microphone recording, the audio-file picker accepts WebM, MP3, MP4/M4A, WAV and OGG without forcing mobile capture mode.

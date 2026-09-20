@@ -77,7 +77,7 @@ const openAiSttApiKeys = [
 export const sttConfig = {
   provider: env.STT_PROVIDER || 'auto',
   openAiApiKeys: openAiSttApiKeys,
-  openAiModel: env.OPENAI_STT_MODEL || 'gpt-4o-mini-transcribe',
+  openAiModel: env.OPENAI_STT_MODEL || 'gpt-4o-transcribe',
   openAiMaxConcurrencyPerKey: positiveNumber(env.OPENAI_STT_MAX_CONCURRENCY_PER_KEY, 1),
   openAiCooldownMs: positiveNumber(env.OPENAI_STT_COOLDOWN_MS, 60_000),
   deepgramApiKey: env.DEEPGRAM_API_KEY,

@@ -17,6 +17,14 @@ type OpenAiKeyState = {
   failures: number;
 };
 
+const BILINGUAL_TRANSCRIPTION_PROMPT = [
+  'The speaker may use Kazakh, Russian, or switch between both languages.',
+  'Transcribe the speech exactly in the language spoken; do not translate.',
+  'Use correct Cyrillic letters, including Kazakh Ә, Ғ, Қ, Ң, Ө, Ұ, Ү, Һ, І.',
+  'Preserve punctuation, names, numbers, and debate terminology.',
+  'Common terms include: дебат, аргумент, контраргумент, опровержение, резолюция, кейс, фрейминг, импакт, clash, rebuttal, Government, Opposition, Үкімет, Оппозиция, қарар, дәлел, уәж, терістеу, қақтығыс, салдар.',
+].join(' ');
+
 const openAiKeys: OpenAiKeyState[] = sttConfig.openAiApiKeys.map((key, index) => ({
   key,
   slot: index + 1,
@@ -50,6 +58,8 @@ async function transcribeWithOpenAi(
 ): Promise<SttResult> {
   const form = new FormData();
   form.set('model', sttConfig.openAiModel);
+  form.set('prompt', BILINGUAL_TRANSCRIPTION_PROMPT);
+  form.set('temperature', '0');
   form.set('file', new Blob([bytes], { type: mimeType }), fileNameForMime(mimeType));
   const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
@@ -81,7 +91,7 @@ async function tryOpenAiPool(bytes: Uint8Array<ArrayBuffer>, mimeType: string) {
     try {
       const result = await transcribeWithOpenAi(state, bytes, mimeType);
       state.successes += 1;
-      console.log({ event: 'stt_route', provider: 'openai', keySlot: state.slot, model: sttConfig.openAiModel });
+      console.log({ event: 'stt_route', provider: 'openai', keySlot: state.slot, model: sttConfig.openAiModel, languageMode: 'kk-ru-bilingual' });
       return result;
     } catch (error) {
       state.failures += 1;
@@ -92,7 +102,6 @@ async function tryOpenAiPool(bytes: Uint8Array<ArrayBuffer>, mimeType: string) {
         console.warn({ event: 'stt_key_cooldown', provider: 'openai', keySlot: state.slot, status });
         continue;
       }
-      // A request-level 4xx (for example unsupported audio) will fail for every key.
       return null;
     } finally {
       state.inFlight = Math.max(0, state.inFlight - 1);
@@ -104,7 +113,7 @@ async function tryOpenAiPool(bytes: Uint8Array<ArrayBuffer>, mimeType: string) {
 async function tryDeepgram(bytes: Uint8Array<ArrayBuffer>, mimeType: string): Promise<SttResult | null> {
   if (!sttConfig.deepgramApiKey) return null;
   const model = sttConfig.deepgramModel;
-  const url = 'https://api.deepgram.com/v1/listen?model=' + encodeURIComponent(model) + '&smart_format=true&detect_language=true';
+  const url = 'https://api.deepgram.com/v1/listen?model=' + encodeURIComponent(model) + '&smart_format=true&punctuate=true&detect_language=true';
   const response = await fetch(url, {
     method: 'POST',
     signal: AbortSignal.timeout(45_000),
@@ -126,6 +135,8 @@ async function tryGroq(bytes: Uint8Array<ArrayBuffer>, mimeType: string): Promis
   if (!sttConfig.groqApiKey) return null;
   const form = new FormData();
   form.set('model', sttConfig.groqModel);
+  form.set('prompt', BILINGUAL_TRANSCRIPTION_PROMPT);
+  form.set('temperature', '0');
   form.set('file', new Blob([bytes], { type: mimeType }), fileNameForMime(mimeType));
   const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
     method: 'POST',
@@ -156,6 +167,8 @@ export function configuredSttProviders() {
   }));
   return {
     mode: sttConfig.provider,
+    policy: 'openai_always_first',
+    languageMode: 'kk-ru-bilingual',
     routeOrder: ['openai_pool', 'deepgram', 'groq'],
     primary: {
       name: 'openai',
@@ -176,16 +189,16 @@ export async function transcribeAudio(audio: ArrayBufferLike, mimeType = 'audio/
   const source = Buffer.from(audio);
   const bytes = new Uint8Array(source.length);
   bytes.set(source);
-  const mode = sttConfig.provider.toLowerCase();
 
-  if ((mode === 'auto' || mode === 'openai') && openAiKeys.length) {
+  // OpenAI is always the primary route whenever at least one key is available.
+  // Deepgram and Groq are used only when the whole OpenAI pool is busy,
+  // cooling down, or failed for this request.
+  if (openAiKeys.length) {
     const result = await tryOpenAiPool(bytes, mimeType);
     if (result) return result;
   }
-  if (mode === 'auto' || mode === 'openai' || mode === 'deepgram') {
-    const result = await tryDeepgram(bytes, mimeType);
-    if (result) return result;
-  }
+  const deepgram = await tryDeepgram(bytes, mimeType);
+  if (deepgram) return deepgram;
   const groq = await tryGroq(bytes, mimeType);
   if (groq) return groq;
   return { text: '', provider: 'none', model: 'none', fallback: true } satisfies SttResult;

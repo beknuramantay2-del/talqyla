@@ -1,4 +1,4 @@
-export type ProviderName = 'groq' | 'openrouter' | 'openrouter_backup' | 'google' | 'opencode_zen';
+export type ProviderName = 'openai_primary' | 'openai_secondary' | 'groq' | 'openrouter' | 'openrouter_backup' | 'google' | 'opencode_zen';
 
 export type ModelProvider = {
   name: ProviderName;
@@ -15,7 +15,23 @@ const positiveNumber = (value: string | undefined, fallback: number) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const openAiLlmModel = env.OPENAI_LLM_MODEL || 'gpt-4o-mini';
+
 export const llmProviders: ModelProvider[] = [
+  {
+    name: 'openai_primary',
+    baseUrl: 'https://api.openai.com/v1',
+    apiKey: env.OPENAI_LLM_API_KEY_1,
+    model: openAiLlmModel,
+    enabled: Boolean(env.OPENAI_LLM_API_KEY_1),
+  },
+  {
+    name: 'openai_secondary',
+    baseUrl: 'https://api.openai.com/v1',
+    apiKey: env.OPENAI_LLM_API_KEY_2,
+    model: openAiLlmModel,
+    enabled: Boolean(env.OPENAI_LLM_API_KEY_2),
+  },
   {
     name: 'groq',
     baseUrl: 'https://api.groq.com/openai/v1',
@@ -62,27 +78,23 @@ export const llmProviders: ModelProvider[] = [
 ];
 
 export const llmRoutingConfig = {
-  maxConcurrencyPerProvider: positiveNumber(env.LLM_MAX_CONCURRENCY_PER_PROVIDER, 2),
+  maxConcurrencyPerProvider: positiveNumber(env.LLM_MAX_CONCURRENCY_PER_PROVIDER, 1),
   cooldownMs: positiveNumber(env.LLM_PROVIDER_COOLDOWN_MS, 45_000),
 };
 
-const openAiSttApiKeys = [
-  env.OPENAI_STT_API_KEY_1,
-  env.OPENAI_STT_API_KEY_2,
-  env.OPENAI_STT_API_KEY_3,
-]
-  .map(value => value?.trim())
-  .filter((value): value is string => Boolean(value));
+// STT is intentionally isolated from the two OpenAI LLM keys.
+// OPENAI_STT_API_KEY_1 is accepted only as a migration fallback.
+const openAiSttApiKey = (env.OPENAI_STT_API_KEY || env.OPENAI_STT_API_KEY_1)?.trim();
 
 export const sttConfig = {
   provider: env.STT_PROVIDER || 'auto',
-  openAiApiKeys: openAiSttApiKeys,
-  openAiModel: env.OPENAI_STT_MODEL || 'gpt-4o-transcribe',
+  openAiApiKeys: openAiSttApiKey ? [openAiSttApiKey] : [],
+  openAiModel: env.OPENAI_STT_MODEL || 'whisper-1',
   openAiMaxConcurrencyPerKey: positiveNumber(env.OPENAI_STT_MAX_CONCURRENCY_PER_KEY, 1),
   openAiCooldownMs: positiveNumber(env.OPENAI_STT_COOLDOWN_MS, 60_000),
   deepgramApiKey: env.DEEPGRAM_API_KEY,
   deepgramModel: env.DEEPGRAM_MODEL || 'nova-3',
-  groqApiKey: env.GROQ_API_KEY,
+  groqApiKey: env.GROQ_STT_API_KEY || env.GROQ_API_KEY,
   groqModel: env.GROQ_STT_MODEL || 'whisper-large-v3-turbo',
 };
 

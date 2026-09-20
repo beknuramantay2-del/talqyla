@@ -51,11 +51,7 @@ const responseError = async (provider: string, response: Response) => {
   return error;
 };
 
-async function transcribeWithOpenAi(
-  state: OpenAiKeyState,
-  bytes: Uint8Array<ArrayBuffer>,
-  mimeType: string,
-): Promise<SttResult> {
+async function transcribeWithOpenAi(state: OpenAiKeyState, bytes: Uint8Array<ArrayBuffer>, mimeType: string): Promise<SttResult> {
   const form = new FormData();
   form.set('model', sttConfig.openAiModel);
   form.set('prompt', BILINGUAL_TRANSCRIPTION_PROMPT);
@@ -71,7 +67,7 @@ async function transcribeWithOpenAi(
   const data = await response.json();
   const text = String(data?.text || '').trim();
   if (!text) throw new Error('OpenAI STT returned empty text');
-  return { text, provider: 'openai', model: sttConfig.openAiModel, fallback: false };
+  return { text, provider: 'openai', model: sttConfig.openAiModel, fallback: true };
 }
 
 async function tryOpenAiPool(bytes: Uint8Array<ArrayBuffer>, mimeType: string) {
@@ -84,7 +80,6 @@ async function tryOpenAiPool(bytes: Uint8Array<ArrayBuffer>, mimeType: string) {
       .filter(item => item.inFlight < sttConfig.openAiMaxConcurrencyPerKey)
       .sort((left, right) => left.inFlight - right.inFlight || left.lastUsed - right.lastUsed || left.slot - right.slot)[0];
     if (!state) return null;
-
     attempted.add(state.slot);
     state.inFlight += 1;
     state.lastUsed = now;
@@ -128,7 +123,7 @@ async function tryDeepgram(bytes: Uint8Array<ArrayBuffer>, mimeType: string): Pr
   const text = String(data?.results?.channels?.[0]?.alternatives?.[0]?.transcript || '').trim();
   if (!text) return null;
   console.log({ event: 'stt_route', provider: 'deepgram', model });
-  return { text, provider: 'deepgram', model, fallback: openAiKeys.length > 0 };
+  return { text, provider: 'deepgram', model, fallback: true };
 }
 
 async function tryGroq(bytes: Uint8Array<ArrayBuffer>, mimeType: string): Promise<SttResult | null> {
@@ -151,8 +146,8 @@ async function tryGroq(bytes: Uint8Array<ArrayBuffer>, mimeType: string): Promis
   const data = await response.json();
   const text = String(data?.text || '').trim();
   if (!text) return null;
-  console.log({ event: 'stt_route', provider: 'groq', model: sttConfig.groqModel });
-  return { text, provider: 'groq', model: sttConfig.groqModel, fallback: openAiKeys.length > 0 || Boolean(sttConfig.deepgramApiKey) };
+  console.log({ event: 'stt_route', provider: 'groq', model: sttConfig.groqModel, languageMode: 'kk-ru-bilingual' });
+  return { text, provider: 'groq', model: sttConfig.groqModel, fallback: false };
 }
 
 export function configuredSttProviders() {
@@ -167,20 +162,17 @@ export function configuredSttProviders() {
   }));
   return {
     mode: sttConfig.provider,
-    policy: 'openai_always_first',
+    policy: 'groq_first',
     languageMode: 'kk-ru-bilingual',
-    routeOrder: ['openai_pool', 'deepgram', 'groq'],
+    routeOrder: ['groq', 'openai_whisper', 'deepgram'],
     primary: {
-      name: 'openai',
-      model: sttConfig.openAiModel,
-      keyCount: openAiKeys.length,
-      availableKeys: openAi.filter(item => item.available).length,
-      maxConcurrencyPerKey: sttConfig.openAiMaxConcurrencyPerKey,
-      keys: openAi,
+      name: 'groq',
+      model: sttConfig.groqModel,
+      configured: Boolean(sttConfig.groqApiKey),
     },
     fallbacks: [
+      ...(openAiKeys.length ? [{ name: 'openai', model: sttConfig.openAiModel, keyCount: openAiKeys.length, availableKeys: openAi.filter(item => item.available).length, keys: openAi }] : []),
       ...(sttConfig.deepgramApiKey ? [{ name: 'deepgram', model: sttConfig.deepgramModel }] : []),
-      ...(sttConfig.groqApiKey ? [{ name: 'groq', model: sttConfig.groqModel }] : []),
     ],
   };
 }
@@ -190,16 +182,14 @@ export async function transcribeAudio(audio: ArrayBufferLike, mimeType = 'audio/
   const bytes = new Uint8Array(source.length);
   bytes.set(source);
 
-  // OpenAI is always the primary route whenever at least one key is available.
-  // Deepgram and Groq are used only when the whole OpenAI pool is busy,
-  // cooling down, or failed for this request.
+  // STT priority is fixed: Groq Whisper Large V3 Turbo -> OpenAI Whisper-1 -> Deepgram.
+  const groq = await tryGroq(bytes, mimeType);
+  if (groq) return groq;
   if (openAiKeys.length) {
-    const result = await tryOpenAiPool(bytes, mimeType);
-    if (result) return result;
+    const openAi = await tryOpenAiPool(bytes, mimeType);
+    if (openAi) return openAi;
   }
   const deepgram = await tryDeepgram(bytes, mimeType);
   if (deepgram) return deepgram;
-  const groq = await tryGroq(bytes, mimeType);
-  if (groq) return groq;
   return { text: '', provider: 'none', model: 'none', fallback: true } satisfies SttResult;
 }

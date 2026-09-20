@@ -1,51 +1,56 @@
-# Railway variables: OpenAI-first voice transcription
+# Railway variables: two OpenAI LLM keys and Groq-first STT
 
-Set these values in **Railway → Talqyla service → Variables**. Do not commit real keys.
+Set secret values in **Railway → Talqyla service → Variables**. Never commit real keys.
 
 ```dotenv
+# Two keys only for thinking and answers
+OPENAI_LLM_API_KEY_1=sk-proj-...
+OPENAI_LLM_API_KEY_2=sk-proj-...
+OPENAI_LLM_MODEL=gpt-4o-mini
+LLM_MAX_CONCURRENCY_PER_PROVIDER=1
+LLM_PROVIDER_COOLDOWN_MS=45000
+
+# Primary speech-to-text
 STT_PROVIDER=auto
-OPENAI_STT_API_KEY_1=sk-proj-...
-OPENAI_STT_API_KEY_2=sk-proj-...
-OPENAI_STT_API_KEY_3=sk-proj-...
-OPENAI_STT_MODEL=gpt-4o-transcribe
+GROQ_STT_API_KEY=gsk_...
+GROQ_STT_MODEL=whisper-large-v3-turbo
+
+# One separate OpenAI key only for STT fallback
+OPENAI_STT_API_KEY=sk-proj-...
+OPENAI_STT_MODEL=whisper-1
 OPENAI_STT_MAX_CONCURRENCY_PER_KEY=1
 OPENAI_STT_COOLDOWN_MS=60000
+
+# Final STT fallback
 DEEPGRAM_API_KEY=...
 DEEPGRAM_MODEL=nova-3
-GROQ_API_KEY=...
-GROQ_STT_MODEL=whisper-large-v3-turbo
 ```
 
-## Effective route order
+## Routing
 
-1. Any available OpenAI key using `gpt-4o-transcribe`.
-2. Deepgram `nova-3` only when all OpenAI slots are busy, cooling down, or OpenAI fails.
-3. Groq `whisper-large-v3-turbo` only when OpenAI and Deepgram are unavailable.
+### Answers
 
-OpenAI is enforced as the first route whenever at least one OpenAI key is configured. `STT_PROVIDER=auto` remains the recommended Railway value.
+1. `OPENAI_LLM_API_KEY_1` with `gpt-4o-mini`.
+2. `OPENAI_LLM_API_KEY_2` with `gpt-4o-mini` when the first key is busy or cooling down.
+3. Existing Groq, Google and OpenRouter providers remain optional fallbacks.
 
-With `OPENAI_STT_MAX_CONCURRENCY_PER_KEY=1`, three keys provide three concurrent OpenAI transcription slots. Increase this value only after checking account rate limits.
+### Voice transcription
 
-A key that returns 401, 403, 429, a network error, or 5xx enters cooldown. The router continues through the remaining OpenAI keys before falling back. Key values are never included in status output or logs.
+1. Groq `whisper-large-v3-turbo` — always first.
+2. The isolated `OPENAI_STT_API_KEY` with OpenAI `whisper-1` — second.
+3. Deepgram `nova-3` — final fallback.
 
-## Kazakh and Russian transcription
+The Kazakh/Russian bilingual prompt, Kazakh Cyrillic letters, debate vocabulary, no-translation rule and deterministic temperature remain enabled for Groq and OpenAI transcription.
 
-OpenAI and Groq receive a bilingual transcription prompt that:
+## Migration
 
-- allows Kazakh, Russian, and code-switching in one recording;
-- forbids translation and preserves the language actually spoken;
-- asks for correct Kazakh Cyrillic letters: Ә, Ғ, Қ, Ң, Ө, Ұ, Ү, Һ, І;
-- supplies Russian, Kazakh, and international debate terminology;
-- uses deterministic temperature `0` for more stable spelling.
+Remove these old Railway variables so the three OpenAI keys cannot be assigned to the wrong role:
 
-Deepgram keeps automatic language detection, smart formatting, and punctuation enabled.
+```dotenv
+OPENAI_STT_API_KEY_1
+OPENAI_STT_API_KEY_2
+OPENAI_STT_API_KEY_3
+OPENAI_STT_MODEL=gpt-4o-transcribe
+```
 
-After Railway redeploys, check `/api/providers`. The STT response should report:
-
-- `policy`: `openai_always_first`;
-- `languageMode`: `kk-ru-bilingual`;
-- `routeOrder`: `openai_pool`, `deepgram`, `groq`;
-- `primary.model`: `gpt-4o-transcribe`;
-- `primary.keyCount`: `3` when all three keys are set.
-
-For desktop browsers, the Mini App first uses `MediaRecorder`. If Telegram Desktop or the browser does not expose microphone recording, the audio-file picker accepts WebM, MP3, MP4/M4A, WAV and OGG without forcing mobile capture mode.
+Then create the new role-specific variables shown above. After redeploying, `/api/providers` should report STT policy `groq_first` and route order `groq`, `openai_whisper`, `deepgram`.

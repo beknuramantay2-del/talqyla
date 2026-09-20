@@ -70,7 +70,12 @@ const openAiSttApiKeys = [
   env.OPENAI_STT_API_KEY_1,
   env.OPENAI_STT_API_KEY_2,
   env.OPENAI_STT_API_KEY_3,
-].filter((value): value is string => Boolean(value?.trim()));
+  env.OPENAI_STT_API_KEY_4,
+  env.OPENAI_STT_API_KEY_5,
+  env.OPENAI_STT_API_KEY_6,
+]
+  .map(value => value?.trim())
+  .filter((value): value is string => Boolean(value));
 
 export const sttConfig = {
   provider: env.STT_PROVIDER || 'auto',

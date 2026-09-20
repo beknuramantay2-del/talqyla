@@ -13,6 +13,8 @@ type OpenAiKeyState = {
   inFlight: number;
   cooldownUntil: number;
   lastUsed: number;
+  successes: number;
+  failures: number;
 };
 
 const openAiKeys: OpenAiKeyState[] = sttConfig.openAiApiKeys.map((key, index) => ({
@@ -21,6 +23,8 @@ const openAiKeys: OpenAiKeyState[] = sttConfig.openAiApiKeys.map((key, index) =>
   inFlight: 0,
   cooldownUntil: 0,
   lastUsed: 0,
+  successes: 0,
+  failures: 0,
 }));
 
 const fileNameForMime = (mimeType: string) => {
@@ -70,20 +74,26 @@ async function tryOpenAiPool(bytes: Uint8Array<ArrayBuffer>, mimeType: string) {
       .filter(item => item.inFlight < sttConfig.openAiMaxConcurrencyPerKey)
       .sort((left, right) => left.inFlight - right.inFlight || left.lastUsed - right.lastUsed || left.slot - right.slot)[0];
     if (!state) return null;
+
     attempted.add(state.slot);
     state.inFlight += 1;
     state.lastUsed = now;
     try {
       const result = await transcribeWithOpenAi(state, bytes, mimeType);
+      state.successes += 1;
       console.log({ event: 'stt_route', provider: 'openai', keySlot: state.slot, model: sttConfig.openAiModel });
       return result;
     } catch (error) {
+      state.failures += 1;
       const status = (error as Error & { status?: number }).status;
-      if (status === 429 || (status && status >= 500)) {
+      const shouldCoolDown = !status || status === 401 || status === 403 || status === 429 || status >= 500;
+      if (shouldCoolDown) {
         state.cooldownUntil = Date.now() + sttConfig.openAiCooldownMs;
-      } else if (status && status >= 400 && status < 500) {
-        return null;
+        console.warn({ event: 'stt_key_cooldown', provider: 'openai', keySlot: state.slot, status });
+        continue;
       }
+      // A request-level 4xx (for example unsupported audio) will fail for every key.
+      return null;
     } finally {
       state.inFlight = Math.max(0, state.inFlight - 1);
     }
@@ -136,14 +146,24 @@ async function tryGroq(bytes: Uint8Array<ArrayBuffer>, mimeType: string): Promis
 
 export function configuredSttProviders() {
   const now = Date.now();
+  const openAi = openAiKeys.map(item => ({
+    slot: item.slot,
+    inFlight: item.inFlight,
+    coolingDown: item.cooldownUntil > now,
+    available: item.cooldownUntil <= now && item.inFlight < sttConfig.openAiMaxConcurrencyPerKey,
+    successes: item.successes,
+    failures: item.failures,
+  }));
   return {
     mode: sttConfig.provider,
+    routeOrder: ['openai_pool', 'deepgram', 'groq'],
     primary: {
       name: 'openai',
       model: sttConfig.openAiModel,
       keyCount: openAiKeys.length,
-      availableKeys: openAiKeys.filter(item => item.cooldownUntil <= now && item.inFlight < sttConfig.openAiMaxConcurrencyPerKey).length,
+      availableKeys: openAi.filter(item => item.available).length,
       maxConcurrencyPerKey: sttConfig.openAiMaxConcurrencyPerKey,
+      keys: openAi,
     },
     fallbacks: [
       ...(sttConfig.deepgramApiKey ? [{ name: 'deepgram', model: sttConfig.deepgramModel }] : []),

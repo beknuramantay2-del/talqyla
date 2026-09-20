@@ -30,13 +30,14 @@ export async function routedChat(request: ChatRequest): Promise<{ text: string; 
     const now = Date.now();
     const candidates = enabled
       .filter(provider => !attempted.has(provider.name))
-      .filter(provider => (providerStates.get(provider.name)?.cooldownUntil || 0) <= now)
+      .filter(provider => {
+        const state = providerStates.get(provider.name)!;
+        return state.cooldownUntil <= now && state.inFlight < llmRoutingConfig.maxConcurrencyPerProvider;
+      })
       .sort((left, right) => {
         const leftState = providerStates.get(left.name)!;
         const rightState = providerStates.get(right.name)!;
-        const leftOverloaded = leftState.inFlight >= llmRoutingConfig.maxConcurrencyPerProvider ? 1 : 0;
-        const rightOverloaded = rightState.inFlight >= llmRoutingConfig.maxConcurrencyPerProvider ? 1 : 0;
-        return leftOverloaded - rightOverloaded || leftState.inFlight - rightState.inFlight || enabled.indexOf(left) - enabled.indexOf(right);
+        return leftState.inFlight - rightState.inFlight || enabled.indexOf(left) - enabled.indexOf(right);
       });
     const provider = candidates[0];
     if (!provider) break;
@@ -53,7 +54,7 @@ export async function routedChat(request: ChatRequest): Promise<{ text: string; 
     } catch (error) {
       state.failures += 1;
       const status = error instanceof ProviderError ? error.status : undefined;
-      if (status === 429 || (status && status >= 500)) state.cooldownUntil = Date.now() + llmRoutingConfig.cooldownMs;
+      if (!status || status === 429 || status >= 500) state.cooldownUntil = Date.now() + llmRoutingConfig.cooldownMs;
       console.error({ event: 'llm_provider_error', provider: provider.name, status, error: error instanceof Error ? error.message : String(error) });
     } finally {
       state.inFlight = Math.max(0, state.inFlight - 1);
@@ -74,7 +75,9 @@ export function providerRoutingStatus() {
       name: provider.name,
       model: provider.model,
       inFlight: state.inFlight,
+      overloaded: state.inFlight >= llmRoutingConfig.maxConcurrencyPerProvider,
       coolingDown: state.cooldownUntil > now,
+      available: state.cooldownUntil <= now && state.inFlight < llmRoutingConfig.maxConcurrencyPerProvider,
       successes: state.successes,
       failures: state.failures,
     };

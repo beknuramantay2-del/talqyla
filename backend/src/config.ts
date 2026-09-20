@@ -10,6 +10,10 @@ export type ModelProvider = {
 };
 
 const env = process.env;
+const positiveNumber = (value: string | undefined, fallback: number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
 
 export const llmProviders: ModelProvider[] = [
   {
@@ -57,15 +61,27 @@ export const llmProviders: ModelProvider[] = [
   },
 ];
 
+export const llmRoutingConfig = {
+  maxConcurrencyPerProvider: positiveNumber(env.LLM_MAX_CONCURRENCY_PER_PROVIDER, 2),
+  cooldownMs: positiveNumber(env.LLM_PROVIDER_COOLDOWN_MS, 45_000),
+};
+
+const openAiSttApiKeys = [
+  env.OPENAI_STT_API_KEY_1,
+  env.OPENAI_STT_API_KEY_2,
+  env.OPENAI_STT_API_KEY_3,
+].filter((value): value is string => Boolean(value?.trim()));
+
 export const sttConfig = {
-  provider: env.STT_PROVIDER || 'deepgram',
+  provider: env.STT_PROVIDER || 'auto',
+  openAiApiKeys: openAiSttApiKeys,
+  openAiModel: env.OPENAI_STT_MODEL || 'gpt-4o-mini-transcribe',
+  openAiMaxConcurrencyPerKey: positiveNumber(env.OPENAI_STT_MAX_CONCURRENCY_PER_KEY, 1),
+  openAiCooldownMs: positiveNumber(env.OPENAI_STT_COOLDOWN_MS, 60_000),
   deepgramApiKey: env.DEEPGRAM_API_KEY,
   deepgramModel: env.DEEPGRAM_MODEL || 'nova-3',
   groqApiKey: env.GROQ_API_KEY,
   groqModel: env.GROQ_STT_MODEL || 'whisper-large-v3-turbo',
-  googleApiKey: env.GOOGLE_API_KEY,
-  googleSttModel: env.GOOGLE_STT_MODEL || 'gemini-3.5-transcribe',
-  assemblyAiApiKey: env.ASSEMBLYAI_API_KEY,
 };
 
 export const telegramConfig = {

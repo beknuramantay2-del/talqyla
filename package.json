@@ -11,7 +11,11 @@
     "start": "node backend/dist/polling.js",
     "test": "node tests.js",
     "lint": "pnpm -r run lint",
-    "typecheck": "tsc -p backend/tsconfig.json --noEmit"
+    "typecheck": "tsc -p backend/tsconfig.json --noEmit",
+    "db:generate": "pnpm --filter @talqyla/db prisma:generate",
+    "db:deploy": "pnpm --filter @talqyla/db prisma:deploy",
+    "db:seed": "pnpm --filter @talqyla/db seed",
+    "smoke": "node scripts/smoke.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.16.0",
